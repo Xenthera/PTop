@@ -12,7 +12,7 @@ import shutil
 import re
 from typing import Dict, Any, List, Tuple, Optional
 from abc import ABC, abstractmethod
-from .history_graph import HistoryGraph
+from .history_graph import SingleLineGraph, MultiLineGraph
 from .progress_bar import draw_status_bar, draw_bar_gradient
 from .inline import compose_inline, compose_inline_width, InlineText, InlineBar, InlineGraph, InlineSpacer
 
@@ -76,9 +76,14 @@ class Panel:
         rounded: If True, use rounded corners; if False, use square corners (default)
         border_color: Optional ANSI color code for borders (e.g., ANSIColors.BRIGHT_CYAN)
                      If None, borders use default color (no ANSI codes)
+        borderless: If True, render without borders (default: False)
+        z: Z-order for rendering (lower values render first, default: 0)
+        max_width: Optional maximum width (for HLayout constraints, default: None)
+        max_height: Optional maximum height (for VLayout constraints, default: None)
     """
     def __init__(self, row: int, col: int, width: int, height: int, title: str = "", 
-                 rounded: bool = False, border_color: Optional[str] = None):
+                 rounded: bool = False, border_color: Optional[str] = None, borderless: bool = False,
+                 z: int = 0, max_width: Optional[int] = None, max_height: Optional[int] = None):
         self.row = row
         self.col = col
         self.width = width
@@ -86,14 +91,19 @@ class Panel:
         self.title = title
         self.rounded = rounded
         self.border_color = border_color
+        self.borderless = borderless
+        self.z = z
+        self.max_width = max_width
+        self.max_height = max_height
         self.left_labels: List[str] = []
         self.right_labels: List[str] = []
-        # Title is always the first left-aligned label
-        if title:
+        # Title is always the first left-aligned label (only if not borderless)
+        if title and not borderless:
             self.left_labels.append(title)
         self.content_lines: List[str] = []
         self._last_content_hash: Optional[int] = None
         self._last_rendered_lines: List[str] = []
+        self._last_rendered_dimensions: Optional[Tuple[int, int, int, int]] = None  # (row, col, width, height)
     
     """
     Add a left-aligned label to the top border.
@@ -212,12 +222,19 @@ class Panel:
         self.add_line(line)
     
     """
-    Check if panel content has changed since last render.
+    Check if panel content or dimensions have changed since last render.
     
     Returns:
-        True if content has changed, False otherwise
+        True if content or dimensions have changed, False otherwise
     """
     def has_changed(self) -> bool:
+        # Check if dimensions or position have changed
+        current_dimensions = (self.row, self.col, self.width, self.height)
+        if self._last_rendered_dimensions != current_dimensions:
+            self._last_rendered_dimensions = current_dimensions
+            return True
+        
+        # Check if content has changed
         current_hash = hash(tuple(self.content_lines))
         if current_hash != self._last_content_hash:
             self._last_content_hash = current_hash
@@ -398,15 +415,29 @@ class Panel:
     def render(self) -> List[str]:
         lines = []
         
-        # Top border with labels
-        available_width = self.width - 2  # Account for corner characters
-        lines.append(self._build_top_border(available_width))
-        
-        # Content lines
-        lines.extend(self._build_content_lines())
-        
-        # Bottom border
-        lines.append(self._build_bottom_border())
+        if self.borderless:
+            # Borderless panel: render content directly without borders
+            content_height = self.height
+            for i in range(content_height):
+                if i < len(self.content_lines):
+                    content = self.content_lines[i]
+                    visible_len = visible_length(content)
+                    padding_needed = max(0, (self.width - visible_len))
+                    padded = content + ' ' * padding_needed
+                else:
+                    padded = ' ' * self.width
+                lines.append(padded)
+        else:
+            # Bordered panel: render with borders
+            # Top border with labels
+            available_width = self.width - 2  # Account for corner characters
+            lines.append(self._build_top_border(available_width))
+            
+            # Content lines
+            lines.extend(self._build_content_lines())
+            
+            # Bottom border
+            lines.append(self._build_bottom_border())
         
         self._last_rendered_lines = lines
         return lines
@@ -415,6 +446,24 @@ class Panel:
 # ============================================================================
 # Layout System
 # ============================================================================
+
+"""
+Get the content area dimensions of a panel (for placing layouts inside).
+
+Args:
+    panel: Panel to get content area for
+
+Returns:
+    Tuple of (content_row, content_col, content_width, content_height)
+    For borderless panels, returns the full panel dimensions.
+    For bordered panels, returns the area inside the borders.
+"""
+def get_panel_content_area(panel: Panel) -> Tuple[int, int, int, int]:
+    if panel.borderless:
+        return (panel.row, panel.col, panel.width, panel.height)
+    else:
+        # Content area is inside borders: row+1, col+1, width-2, height-2
+        return (panel.row + 1, panel.col + 1, panel.width - 2, panel.height - 2)
 
 class BaseLayout:
     """
@@ -494,12 +543,45 @@ class HLayout(BaseLayout):
         if num_items == 0:
             return
         
+        # Calculate base item width
         total_spacing = self.spacing * (num_items - 1)
-        item_width = (available_width - total_spacing) // num_items
+        base_item_width = (available_width - total_spacing) // num_items
+        
+        # Apply max_width constraints and redistribute space
+        panel_items = [item for item in self.items if isinstance(item, Panel)]
+        layout_items = [item for item in self.items if isinstance(item, BaseLayout)]
+        
+        # First pass: calculate actual widths considering max_width
+        actual_widths = []
+        total_used_width = 0
+        flexible_items = []
+        
+        for item in self.items:
+            if isinstance(item, Panel) and item.max_width is not None:
+                actual_width = min(base_item_width, item.max_width)
+                actual_widths.append(actual_width)
+                total_used_width += actual_width
+            else:
+                actual_widths.append(base_item_width)
+                total_used_width += base_item_width
+                flexible_items.append(len(actual_widths) - 1)
+        
+        # Redistribute remaining space to flexible items
+        remaining_width = available_width - total_spacing - total_used_width
+        if remaining_width > 0 and flexible_items:
+            extra_per_item = remaining_width // len(flexible_items)
+            for idx in flexible_items:
+                actual_widths[idx] += extra_per_item
+            # Distribute any remainder
+            remainder = remaining_width % len(flexible_items)
+            for i, idx in enumerate(flexible_items):
+                if i < remainder:
+                    actual_widths[idx] += 1
         
         # Position items horizontally
         current_col = start_col + self.margin
-        for item in self.items:
+        for i, item in enumerate(self.items):
+            item_width = actual_widths[i]
             if isinstance(item, Panel):
                 item.row = start_row + self.margin
                 item.col = current_col
@@ -537,12 +619,73 @@ class VLayout(BaseLayout):
         if num_items == 0:
             return
         
+        # Calculate base item height
         total_spacing = self.spacing * (num_items - 1)
-        item_height = (available_height - total_spacing) // num_items
+        base_item_height = (available_height - total_spacing) // num_items
+        
+        # Apply max_height constraints and redistribute space
+        # First pass: calculate actual heights considering max_height
+        actual_heights = []
+        total_used_height = 0
+        flexible_items = []
+        
+        for item in self.items:
+            if isinstance(item, Panel) and item.max_height is not None:
+                actual_height = min(base_item_height, item.max_height)
+                actual_heights.append(actual_height)
+                total_used_height += actual_height
+            else:
+                actual_heights.append(base_item_height)
+                total_used_height += base_item_height
+                flexible_items.append(len(actual_heights) - 1)
+        
+        # Redistribute remaining space to flexible items
+        remaining_height = available_height - total_spacing - total_used_height
+        if remaining_height > 0 and flexible_items:
+            extra_per_item = remaining_height // len(flexible_items)
+            for idx in flexible_items:
+                actual_heights[idx] += extra_per_item
+            # Distribute any remainder
+            remainder = remaining_height % len(flexible_items)
+            for i, idx in enumerate(flexible_items):
+                if i < remainder:
+                    actual_heights[idx] += 1
+        
+        # Ensure total height doesn't exceed available space
+        total_actual_height = sum(actual_heights) + total_spacing
+        if total_actual_height > available_height:
+            # Reduce heights proportionally to fit
+            scale_factor = available_height / total_actual_height
+            for i in range(len(actual_heights)):
+                actual_heights[i] = int(actual_heights[i] * scale_factor)
+            # Recalculate total and adjust if needed
+            total_actual_height = sum(actual_heights) + total_spacing
+            if total_actual_height < available_height:
+                # Add back any lost space to the last flexible item
+                diff = available_height - total_actual_height
+                for idx in reversed(flexible_items):
+                    if diff > 0:
+                        actual_heights[idx] += diff
+                        break
         
         # Position items vertically
-        current_row = start_row + self.margin
-        for item in self.items:
+        # Calculate bounds: content area is from start_row to start_row + height - 1 (inclusive)
+        # With margin, usable area is from start_row + margin to start_row + margin + available_height - 1
+        content_start_row = start_row + self.margin
+        content_end_row = start_row + self.margin + available_height - 1  # Inclusive
+        
+        current_row = content_start_row
+        for i, item in enumerate(self.items):
+            item_height = actual_heights[i]
+            
+            # Calculate where this panel would end (inclusive)
+            panel_bottom = current_row + item_height - 1
+            
+            # Clamp panel to fit within available space
+            if panel_bottom > content_end_row:
+                item_height = max(1, content_end_row - current_row + 1)
+                panel_bottom = current_row + item_height - 1
+            
             if isinstance(item, Panel):
                 item.row = current_row
                 item.col = start_col + self.margin
@@ -550,7 +693,14 @@ class VLayout(BaseLayout):
                 item.height = item_height
             elif isinstance(item, BaseLayout):
                 item.update_layout(current_row, start_col + self.margin, available_width, item_height)
-            current_row += item_height + self.spacing
+            
+            # Move to next position (accounting for spacing)
+            # Next panel starts after this one ends, plus spacing
+            current_row = panel_bottom + 1 + self.spacing
+            
+            # Stop if we've exceeded the available space
+            if current_row > content_end_row + 1:
+                break
 
 
 
@@ -672,13 +822,18 @@ class ANSIRendererBase(BaseRenderer):
         title: Optional panel title
         rounded: If True, use rounded corners; if False, use square corners (default)
         border_color: Optional ANSI color code for borders
+        borderless: If True, render without borders (default: False)
+        z: Z-order for rendering (lower values render first, default: 0)
     
     Returns:
         Created Panel object
     """
     def create_panel(self, panel_id: str, row: int, col: int, width: int, height: int, 
-                     title: str = "", rounded: bool = False, border_color: Optional[str] = None) -> Panel:
-        panel = Panel(row, col, width, height, title, rounded=rounded, border_color=border_color)
+                     title: str = "", rounded: bool = False, border_color: Optional[str] = None,
+                     borderless: bool = False, z: int = 0, max_width: Optional[int] = None,
+                     max_height: Optional[int] = None) -> Panel:
+        panel = Panel(row, col, width, height, title, rounded=rounded, border_color=border_color, 
+                     borderless=borderless, z=z, max_width=max_width, max_height=max_height)
         self.panels[panel_id] = panel
         return panel
     
@@ -704,10 +859,29 @@ class ANSIRendererBase(BaseRenderer):
         use_braille: If True, use braille characters; if False, use fallback blocks (default: True)
     
     Returns:
-        HistoryGraph instance
+        SingleLineGraph instance
     """
-    def create_history_graph(self, width: int, min_value: float = 0.0, max_value: float = 100.0, use_braille: bool = True) -> HistoryGraph:
-        return HistoryGraph(width, min_value, max_value, use_braille=use_braille)
+    def create_history_graph(self, width: int, min_value: float = 0.0, max_value: float = 100.0, use_braille: bool = True) -> SingleLineGraph:
+        return SingleLineGraph(width, min_value, max_value, use_braille=use_braille)
+    
+    """
+    Create a new multi-line history graph.
+    
+    Args:
+        width_chars: Width of the graph in characters
+        height_chars: Height of the graph in character rows
+        min_value: Minimum value for scaling (default: 0.0)
+        max_value: Maximum value for scaling (default: 100.0)
+        use_braille: If True, use braille characters; if False, use fallback blocks (default: True)
+        top_to_bottom: If True, render from top to bottom; if False, render from bottom to top (default: False)
+    
+    Returns:
+        MultiLineGraph instance
+    """
+    def create_multi_line_graph(self, width_chars: int, height_chars: int, min_value: float = 0.0, 
+                                 max_value: float = 100.0, use_braille: bool = True,
+                                 top_to_bottom: bool = False) -> MultiLineGraph:
+        return MultiLineGraph(width_chars, height_chars, min_value, max_value, use_braille=use_braille, top_to_bottom=top_to_bottom)
     
     """
     Add a layout to be managed by the renderer.
@@ -789,20 +963,145 @@ class ANSIRendererBase(BaseRenderer):
         sys.stdout.write(f'\033[{row};{col}H')
     
     """
-    Render a panel at its position.
+    Clip a line to fit within visible width, preserving all ANSI codes.
+    
+    This method properly handles ANSI codes that may appear anywhere in the line,
+    not just at the beginning. It maps visible characters to their positions in
+    the original string (accounting for ANSI codes) and clips accordingly.
+    
+    Args:
+        line: Line to clip
+        max_visible_width: Maximum visible width (excluding ANSI codes)
+        start_offset: Number of visible characters to skip from the start
+    
+    Returns:
+        Clipped line string with all ANSI codes preserved
+    """
+    def _clip_line(self, line: str, max_visible_width: int, start_offset: int = 0) -> str:
+        from .utils import strip_ansi
+        
+        if max_visible_width <= 0:
+            return ""
+        
+        # Build a mapping of visible character positions to original string positions
+        # This allows us to clip while preserving ANSI codes
+        visible_to_original = []
+        i = 0
+        while i < len(line):
+            if line[i] == '\033' and i + 1 < len(line) and line[i + 1] == '[':
+                # Found ANSI escape sequence - skip it but don't add to mapping
+                j = i + 2
+                while j < len(line) and line[j] not in 'mH':
+                    j += 1
+                if j < len(line):
+                    j += 1  # Include the terminator
+                i = j
+            else:
+                # Regular character - map it
+                visible_to_original.append(i)
+                i += 1
+        
+        visible_len = len(visible_to_original)
+        
+        # Skip lines that are completely before the start offset
+        if start_offset >= visible_len:
+            return ""
+        
+        # Calculate the range of visible characters we want
+        start_visible = start_offset
+        end_visible = min(start_offset + max_visible_width, visible_len)
+        
+        if start_visible >= end_visible:
+            return ""
+        
+        # Find the corresponding positions in the original string
+        start_original = visible_to_original[start_visible]
+        end_original = visible_to_original[end_visible - 1] + 1
+        
+        # Extract the clipped portion, preserving all ANSI codes
+        clipped = line[start_original:end_original]
+        
+        return clipped
+    
+    """
+    Render all registered panels, sorted by z-order.
+    
+    Panels with lower z values are rendered first (appear behind).
+    Panels with higher z values are rendered last (appear on top).
+    
+    Args:
+        force_redraw: If True, redraw all panels even if content unchanged
+    """
+    def render_all_panels(self, force_redraw: bool = False) -> None:
+        # Sort panels by z-order (lower z renders first)
+        sorted_panels = sorted(self.panels.values(), key=lambda p: p.z)
+        for panel in sorted_panels:
+            self.render_panel(panel, force_redraw=force_redraw)
+    
+    """
+    Render a panel at its position with optional clipping.
     
     Args:
         panel: Panel to render
         force_redraw: If True, redraw even if content unchanged
+        clip_row: Optional top row of clipping region (if None, no clipping)
+        clip_col: Optional left column of clipping region
+        clip_width: Optional width of clipping region
+        clip_height: Optional height of clipping region
     """
-    def render_panel(self, panel: Panel, force_redraw: bool = False) -> None:
+    def render_panel(self, panel: Panel, force_redraw: bool = False, 
+                     clip_row: Optional[int] = None, clip_col: Optional[int] = None,
+                     clip_width: Optional[int] = None, clip_height: Optional[int] = None) -> None:
         if not force_redraw and not panel.has_changed():
             return
         
         panel_lines = panel.render()
+        panel_bottom = panel.row + len(panel_lines) - 1
+        panel_right = panel.col + panel.width - 1
+        
+        # Check if panel is completely outside clipping region
+        if clip_row is not None and clip_col is not None and clip_width is not None and clip_height is not None:
+            clip_bottom = clip_row + clip_height - 1
+            clip_right = clip_col + clip_width - 1
+            
+            # Panel is completely outside clipping region
+            if (panel_bottom < clip_row or panel.row > clip_bottom or
+                panel_right < clip_col or panel.col > clip_right):
+                return
+        
         for i, line in enumerate(panel_lines):
-            self.move_cursor(panel.row + i, panel.col)
-            sys.stdout.write(line)
+            render_row = panel.row + i
+            
+            # Skip if outside clipping region vertically
+            if clip_row is not None and clip_height is not None:
+                if render_row < clip_row or render_row > clip_row + clip_height - 1:
+                    continue
+            
+            # Calculate horizontal clipping for this line
+            render_col = panel.col
+            clipped_line = line
+            
+            if clip_col is not None and clip_width is not None:
+                clip_right = clip_col + clip_width - 1
+                
+                # Panel starts before clip region
+                if panel.col < clip_col:
+                    start_offset = clip_col - panel.col
+                    max_width = min(clip_width, panel.width - start_offset)
+                    clipped_line = self._clip_line(line, max_width, start_offset)
+                    render_col = clip_col
+                # Panel extends beyond clip region
+                elif panel_right > clip_right:
+                    max_width = clip_width - (panel.col - clip_col)
+                    if max_width > 0:
+                        clipped_line = self._clip_line(line, max_width, 0)
+                    else:
+                        continue  # Line is completely outside clip region
+                # Panel is completely within clip region (or starts at clip_col)
+                # No clipping needed, use line as-is
+            
+            self.move_cursor(render_row, render_col)
+            sys.stdout.write(clipped_line)
     
     """
     Render a header line.

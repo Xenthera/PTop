@@ -7,7 +7,7 @@ from .utils import visible_length
 from .colors import ANSIColors
 
 if TYPE_CHECKING:
-    from .history_graph import HistoryGraph
+    from .history_graph import SingleLineGraph
     from .progress_bar import ProgressBar
 
 
@@ -90,12 +90,12 @@ class InlineBar(InlineElement):
 class InlineGraph(InlineElement):
     """History graph element for inline composition."""
     
-    def __init__(self, graph: 'HistoryGraph', renderer, max_size: Optional[int] = None):
+    def __init__(self, graph: 'SingleLineGraph', renderer, max_size: Optional[int] = None):
         """
-        Initialize graph element from a HistoryGraph object.
+        Initialize graph element from a SingleLineGraph object.
         
         Args:
-            graph: HistoryGraph object (knows its own colors)
+            graph: SingleLineGraph object (knows its own colors)
             renderer: ANSIRendererBase instance for rendering
             max_size: Maximum width in characters (None = no limit)
         """

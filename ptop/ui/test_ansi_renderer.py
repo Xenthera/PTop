@@ -17,8 +17,8 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from ptop.ui.ansi_renderer import ANSIRendererBase, ANSIColors, HLayout, VLayout, BaseLayout
-from ptop.ui.history_graph import HistoryGraph
+from ptop.ui.ansi_renderer import ANSIRendererBase, ANSIColors, HLayout, VLayout, BaseLayout, get_panel_content_area
+from ptop.ui.history_graph import SingleLineGraph, MultiLineGraph
 from ptop.ui.inline import InlineText, InlineBar, InlineGraph
 from ptop.ui.progress_bar import ProgressBar
 from ptop.ui.colors import rgb_to_ansitruecolor
@@ -122,9 +122,14 @@ def main():
         panel2 = renderer.create_panel('panel2', 1, 1, 40, 15, 'CPU Cores', rounded=True, border_color=border_colors[1])
         panel3 = renderer.create_panel('panel3', 1, 1, 40, 15, 'System Info', rounded=True, border_color=border_colors[2])
         panel4 = renderer.create_panel('panel4', 1, 1, 40, 15, 'Performance', rounded=True, border_color=border_colors[3])
-        panel5 = renderer.create_panel('panel5', 1, 1, 80, 20, 'Gradient Test', rounded=True, border_color=border_colors[4])
-        panel6 = renderer.create_panel('panel6', 1, 1, 80, 20, 'Gradient Test', rounded=True, border_color=border_colors[5])
-        panel7 = renderer.create_panel('panel7', 1, 1, 80, 20, 'Gradient Test', rounded=True, border_color=border_colors[6])
+        # Create a bordered container panel that will contain a VLayout
+        panel5_container = renderer.create_panel('panel5_container', 1, 1, 80, 25, 'Graph Container', rounded=True, border_color=border_colors[4])
+        
+        # Create borderless header panel and borderless graph panel for the VLayout inside the container
+        panel5_header = renderer.create_panel('panel5_header', 1, 1, 78, 5, '', borderless=True)
+        panel5 = renderer.create_panel('panel5', 1, 1, 78, 18, '', borderless=True)
+        
+        panel7 = renderer.create_panel('panel7', 1, 1, 80, 20, 'Gradient Test', rounded=True, border_color=border_colors[5])
         
         # Create history graphs for CPU usage and temperature
         usage_graph = renderer.create_history_graph(30, min_value=0.0, max_value=100.0)
@@ -151,10 +156,14 @@ def main():
         main_layout.add_layout(left_column)
         main_layout.add_layout(right_column)
         
-        # Bottom row: 3 gradient test panels horizontally
+        # VLayout for panel 5: header panel first, then graph panel
+        panel5_vlayout = VLayout(margin=0, spacing=1)
+        panel5_vlayout.add_panel(panel5_header)
+        panel5_vlayout.add_panel(panel5)
+        
+        # Bottom row: panel 5 container, panel 6 (nested panels), and panel 7 horizontally
         bottom_layout = HLayout(margin=0, spacing=1)
-        bottom_layout.add_panel(panel5)
-        bottom_layout.add_panel(panel6)
+        bottom_layout.add_panel(panel5_container)
         bottom_layout.add_panel(panel7)
         
         # Function to update all layouts based on current terminal size
@@ -173,6 +182,10 @@ def main():
             
             # Update bottom layout
             bottom_layout.update_layout(content_start_row + main_height + 1, 1, cols, bottom_height)
+            
+            # Update VLayout inside panel5_container (use content area of container)
+            content_row, content_col, content_width, content_height = get_panel_content_area(panel5_container)
+            panel5_vlayout.update_layout(content_row, content_col, content_width, content_height)
         
         # Initial layout update
         update_all_layouts()
@@ -355,85 +368,54 @@ def main():
                     bar = renderer.draw_status_bar(val, bar_width)
                     panel.add_line(f"  {val:3d}%: {bar}")
             
-            # Panel 5, 6, 7: Same setup as panel 1 (Usage + Percentage + Bar + History Graph)
-            # Create history graphs for panels 5, 6, 7 (reused across frames)
-            if not hasattr(renderer, '_panel5_graph'):
-                renderer._panel5_graph = renderer.create_history_graph(30, min_value=0.0, max_value=100.0)
-                renderer._panel6_graph = renderer.create_history_graph(30, min_value=0.0, max_value=100.0)
+            # Panel 5 Header: Simple text panel (first in VLayout, borderless)
+            panel5_header.clear()
+            panel5_header.add_line(ANSIColors.BOLD + "Multi-Line Graph Test" + ANSIColors.RESET)
+            panel5_header.add_line("")
+            panel5_header.add_line(f"Current Value: {ANSIColors.BRIGHT_GREEN}{mock_data.overall_usage:.1f}%{ANSIColors.RESET}")
+            panel5_header.add_line(f"Min: {ANSIColors.YELLOW}0.0{ANSIColors.RESET} | Max: {ANSIColors.YELLOW}100.0{ANSIColors.RESET}")
+            panel5_header.add_line(f"Frame: {frame_count}")
+            
+            # Panel 5: Multi-line graph only (top to bottom, borderless)
+            # Create multi-line graph for panel 5 (reused across frames)
+            if not hasattr(renderer, '_panel5_multigraph'):
+                # Panel 5 is borderless, so use full dimensions
+                renderer._panel5_multigraph = renderer.create_multi_line_graph(
+                    width_chars=panel5.width,
+                    height_chars=panel5.height,
+                    min_value=0.0,
+                    max_value=100.0,
+                    top_to_bottom=True  # Enable top-to-bottom rendering
+                )
+                # Store the last known panel dimensions to detect resize
+                renderer._panel5_last_width = panel5.width
+                renderer._panel5_last_height = panel5.height
+            
+            # Check if panel resized and update graph dimensions
+            if (hasattr(renderer, '_panel5_last_width') and hasattr(renderer, '_panel5_last_height') and
+                (panel5.width != renderer._panel5_last_width or panel5.height != renderer._panel5_last_height)):
+                # Panel resized - update graph dimensions
+                renderer._panel5_multigraph.width_chars = panel5.width
+                renderer._panel5_multigraph.height_chars = panel5.height
+                renderer._panel5_last_width = panel5.width
+                renderer._panel5_last_height = panel5.height
+            
+            # Update multi-line graph with actual mock data
+            renderer._panel5_multigraph.add_value(mock_data.overall_usage)
+            
+            # Panel 5: Multi-line graph only (bordered)
+            panel5.clear()
+            # Add the multi-line graph as lines
+            graph_lines = renderer._panel5_multigraph.get_graph_string(renderer).split('\n')
+            for line in graph_lines:
+                panel5.add_line(line)
+            
+            # Panel 7: Create history graph (reused across frames)
+            if not hasattr(renderer, '_panel7_graph'):
                 renderer._panel7_graph = renderer.create_history_graph(30, min_value=0.0, max_value=100.0)
             
-            # Update history graphs with actual mock data (same as panel 1)
-            renderer._panel5_graph.add_value(mock_data.overall_usage)
-            renderer._panel6_graph.add_value(mock_data.overall_usage)
+            # Update history graph with actual mock data
             renderer._panel7_graph.add_value(mock_data.overall_usage)
-            
-            # Panel 5: Same setup as panel 1
-            panel5.clear_labels()
-            panel5.add_left_label('Usage')
-            panel5.add_right_label(f"{mock_data.overall_usage:.1f}%")
-            panel5.add_right_label('Panel 5')
-            
-            panel5.clear()
-            max_color_p5 = renderer._panel5_graph.get_max_value_color(renderer)
-            
-            panel5_bar = ProgressBar(mock_data.overall_usage, truecolor_support=renderer._truecolor_support)
-            panel5.add_inline(
-                InlineText(ANSIColors.BOLD + "Usage:" + ANSIColors.RESET),
-                InlineText(f"{max_color_p5}{mock_data.overall_usage:5.1f}%{ANSIColors.RESET}"),
-                InlineBar(panel5_bar),
-                InlineGraph(renderer._panel5_graph, renderer=renderer, max_size=25),
-                renderer=renderer
-            )
-            panel5.add_line("")
-            panel5.add_line(ANSIColors.BOLD + "Load Average:" + ANSIColors.RESET)
-            panel5.add_line(f"  1m: {ANSIColors.YELLOW}{mock_data.load_avg[0]:.2f}{ANSIColors.RESET}")
-            panel5.add_line(f"  5m: {ANSIColors.YELLOW}{mock_data.load_avg[1]:.2f}{ANSIColors.RESET}")
-            panel5.add_line(f"  15m: {ANSIColors.YELLOW}{mock_data.load_avg[2]:.2f}{ANSIColors.RESET}")
-            
-            # Panel 6: ROYGBV (rainbow) gradient
-            panel6.clear_labels()
-            panel6.add_left_label('Usage')
-            panel6.add_right_label(f"{mock_data.overall_usage:.1f}%")
-            panel6.add_right_label('Panel 6')
-            
-            panel6.clear()
-            max_color_p6 = renderer._panel6_graph.get_max_value_color(renderer)
-            
-            # ROYGBV rainbow gradient: Red -> Orange -> Yellow -> Green -> Blue -> Violet
-            panel6_bar = ProgressBar(
-                mock_data.overall_usage,
-                colors=[
-                    (255, 0, 0),        # Red
-                    (255, 165, 0),      # Orange
-                    (255, 255, 0),      # Yellow
-                    (0, 255, 0),        # Green
-                    (0, 0, 255),        # Blue
-                    (148, 0, 211)       # Violet
-                ],
-                truecolor_support=renderer._truecolor_support
-            )
-            # Also set ROYGBV colors on the graph (using RGB tuples directly)
-            renderer._panel6_graph.colors = [
-                (255, 0, 0),        # Red
-                (255, 165, 0),      # Orange
-                (255, 255, 0),      # Yellow
-                (0, 255, 0),        # Green
-                (0, 0, 255),        # Blue
-                (148, 0, 211)       # Violet
-            ]
-            
-            panel6.add_inline(
-                InlineText(ANSIColors.BOLD + "Usage:" + ANSIColors.RESET),
-                InlineText(f"{max_color_p6}{mock_data.overall_usage:5.1f}%{ANSIColors.RESET}"),
-                InlineBar(panel6_bar),
-                InlineGraph(renderer._panel6_graph, renderer=renderer, max_size=25),
-                renderer=renderer
-            )
-            panel6.add_line("")
-            panel6.add_line(ANSIColors.BOLD + "Load Average:" + ANSIColors.RESET)
-            panel6.add_line(f"  1m: {ANSIColors.YELLOW}{mock_data.load_avg[0]:.2f}{ANSIColors.RESET}")
-            panel6.add_line(f"  5m: {ANSIColors.YELLOW}{mock_data.load_avg[1]:.2f}{ANSIColors.RESET}")
-            panel6.add_line(f"  15m: {ANSIColors.YELLOW}{mock_data.load_avg[2]:.2f}{ANSIColors.RESET}")
             
             # Panel 7: Same setup as panel 1, but with custom RGB colors
             panel7.clear_labels()
@@ -471,13 +453,8 @@ def main():
             panel7.add_line(f"  15m: {ANSIColors.YELLOW}{mock_data.load_avg[2]:.2f}{ANSIColors.RESET}")
             
             # Render all panels in order
-            renderer.render_panel(panel1)
-            renderer.render_panel(panel2)
-            renderer.render_panel(panel3)
-            renderer.render_panel(panel4)
-            renderer.render_panel(panel5)
-            renderer.render_panel(panel6)
-            renderer.render_panel(panel7)
+            # Render all panels (sorted by z-order)
+            renderer.render_all_panels()
             
             sys.stdout.flush()
             

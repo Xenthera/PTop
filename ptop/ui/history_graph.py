@@ -1,7 +1,7 @@
 """
-History graph UI element for scrolling data visualization.
+History graph UI elements for scrolling data visualization.
 
-Single-line scrolling history graph using Unicode braille characters (btop-style).
+Contains both single-line and multi-line graph implementations using Unicode braille characters (btop-style).
 """
 
 import math
@@ -23,7 +23,7 @@ from .colors import (
 FLOOR_EPSILON = 1e-6
 
 
-class HistoryGraph:
+class SingleLineGraph:
     """
     Single-line scrolling history graph using Unicode braille characters (btop-style).
     
@@ -376,3 +376,391 @@ class HistoryGraph:
         # Get original value from the last entry
         _, current_value = self.history[-1]
         return self._get_value_color(current_value, renderer)
+
+
+# Backward compatibility alias
+HistoryGraph = SingleLineGraph
+
+
+class MultiLineGraph:
+    """
+    Multi-line scrolling history graph using Unicode braille characters (btop-style).
+    
+    Supports multiple character rows, equivalent to btop's large graphs.
+    Uses a virtual raster grid where each braille character represents a 2×4 tile.
+    
+    Viewport: width_chars × height_chars
+    Virtual grid: width_chars * 2 × height_chars * 4
+    
+    Data is stored as virtual column heights [0, virtual_height].
+    Data scrolls horizontally by one virtual column per sample.
+    Virtual Y = 0 is the bottom of the graph.
+    """
+    
+    # Braille base codepoint (U+2800)
+    BRAILLE_BASE = 0x2800
+    
+    """
+    Initialize a multi-line history graph.
+    
+    Args:
+        width_chars: Width of the graph in characters
+        height_chars: Height of the graph in character rows
+        min_value: Minimum value for scaling (default: 0.0)
+        max_value: Maximum value for scaling (default: 100.0)
+        use_braille: If True, use braille characters; if False, use fallback blocks
+        top_to_bottom: If True, render from top to bottom (virtual Y=0 at top);
+                       If False, render from bottom to top (virtual Y=0 at bottom, default)
+        colors: List of ANSI color codes or RGB tuples (r, g, b) for gradient stops.
+                Colors are evenly distributed from 0% to 100%.
+                Defaults to [green, yellow, red] if None.
+    """
+    def __init__(self, width_chars: int, height_chars: int, min_value: float = 0.0, 
+                 max_value: float = 100.0, use_braille: bool = True,
+                 top_to_bottom: bool = False,
+                 colors: Optional[List[Union[str, Tuple[int, int, int]]]] = None):
+        self._width_chars = width_chars
+        self._height_chars = height_chars
+        self.min_value = min_value
+        self.max_value = max_value
+        # Virtual grid dimensions
+        self.virtual_width = width_chars * 2  # 2 virtual columns per character
+        self.virtual_height = height_chars * 4  # 4 virtual rows per character
+        # Store history as virtual column heights [0, virtual_height]
+        # Circular buffer sized to virtual_width
+        self.history: List[Tuple[int, float]] = []  # List of (quantized_height, original_value)
+        self.use_braille = use_braille
+        self.top_to_bottom = top_to_bottom  # If True, virtual Y=0 is at top; if False, at bottom
+        self.colors = colors
+    
+    @property
+    def width_chars(self) -> int:
+        """Get the character width."""
+        return self._width_chars
+    
+    @width_chars.setter
+    def width_chars(self, value: int) -> None:
+        """Set the character width and trim history if needed."""
+        self._width_chars = value
+        self.virtual_width = value * 2
+        # Trim history to keep only newest data
+        if len(self.history) > self.virtual_width:
+            self.history = self.history[-self.virtual_width:]
+    
+    @property
+    def height_chars(self) -> int:
+        """Get the character height."""
+        return self._height_chars
+    
+    @height_chars.setter
+    def height_chars(self, value: int) -> None:
+        """Set the character height."""
+        self._height_chars = value
+        self.virtual_height = value * 4
+    
+    """
+    Add a new value to the history graph.
+    
+    New values are added to the right, old values scroll left.
+    Values are quantized to 0-virtual_height and stored at virtual-column resolution.
+    If buffer is full, oldest value is removed.
+    
+    Args:
+        value: New value to add (will be clamped to min_value-max_value and quantized)
+    """
+    def add_value(self, value: float) -> None:
+        # Clamp value to range
+        value = max(self.min_value, min(self.max_value, value))
+        
+        # Normalize to 0.0-1.0
+        value_range = self.max_value - self.min_value
+        if value_range == 0:
+            normalized = 0.5
+        else:
+            normalized = (value - self.min_value) / value_range
+        
+        # Quantize to 0-virtual_height vertical units (virtual column height)
+        quantized = int(math.floor(normalized * self.virtual_height + FLOOR_EPSILON))
+        quantized = max(0, min(self.virtual_height, quantized))
+        
+        # Add to history at virtual-column resolution (store both quantized height and original value)
+        self.history.append((quantized, value))
+        
+        # Keep only the last 'virtual_width' values (circular buffer, scroll left by virtual column)
+        if len(self.history) > self.virtual_width:
+            self.history.pop(0)
+    
+    """Clear the history buffer."""
+    def clear(self) -> None:
+        self.history = []
+    
+    """
+    Pack a 2×4 virtual tile into a single braille character.
+    
+    Each braille character represents a 2×4 tile:
+    - Left virtual column (4 rows) → dots {1, 2, 3, 7}
+    - Right virtual column (4 rows) → dots {4, 5, 6, 8}
+    
+    This method has two completely separate logic paths:
+    - When top_to_bottom=False: heights[0] = bottom row, heights[3] = top row
+    - When top_to_bottom=True: heights[0] = top row, heights[3] = bottom row
+    
+    Args:
+        left_heights: List of 4 heights for left column
+        right_heights: List of 4 heights for right column
+        When top_to_bottom=False: [row0=bottom, row1, row2, row3=top]
+        When top_to_bottom=True: [row0=top, row1, row2, row3=bottom]
+    
+    Returns:
+        Unicode braille character for the 2×4 tile
+    """
+    def _pack_tile(self, left_heights: List[int], right_heights: List[int]) -> str:
+        if not self.use_braille:
+            # Fallback: use average
+            avg_left = sum(left_heights) // len(left_heights) if left_heights else 0
+            avg_right = sum(right_heights) // len(right_heights) if right_heights else 0
+            avg = (avg_left + avg_right) // 2
+            # Use simple block character
+            blocks = [' ', '▁', '▂', '▃', '▄']
+            return blocks[min(avg, len(blocks) - 1)]
+        
+        bitmask = 0
+        
+        if self.top_to_bottom:
+            # TOP TO BOTTOM RENDERING - Separate logic path
+            # left_heights[0] = top row, left_heights[3] = bottom row
+            # Left column: dots {1, 2, 3, 7}
+            # Map: top row (heights[0]) → dot 1, second row (heights[1]) → dot 2,
+            #      third row (heights[2]) → dot 3, bottom row (heights[3]) → dot 7
+            if left_heights[0] > 0:  # Top row
+                bitmask |= (1 << (1 - 1))  # Dot 1 (top-left)
+            if left_heights[1] > 0:  # Second row from top
+                bitmask |= (1 << (2 - 1))  # Dot 2
+            if left_heights[2] > 0:  # Third row from top
+                bitmask |= (1 << (3 - 1))  # Dot 3
+            if left_heights[3] > 0:  # Bottom row
+                bitmask |= (1 << (7 - 1))  # Dot 7 (bottom-left)
+            
+            # Right column: dots {4, 5, 6, 8}
+            # Map: top row (heights[0]) → dot 4, second row (heights[1]) → dot 5,
+            #      third row (heights[2]) → dot 6, bottom row (heights[3]) → dot 8
+            if right_heights[0] > 0:  # Top row
+                bitmask |= (1 << (4 - 1))  # Dot 4 (top-right)
+            if right_heights[1] > 0:  # Second row from top
+                bitmask |= (1 << (5 - 1))  # Dot 5
+            if right_heights[2] > 0:  # Third row from top
+                bitmask |= (1 << (6 - 1))  # Dot 6
+            if right_heights[3] > 0:  # Bottom row
+                bitmask |= (1 << (8 - 1))  # Dot 8 (bottom-right)
+        else:
+            # BOTTOM TO TOP RENDERING (default) - Separate logic path
+            # left_heights[0] = bottom row, left_heights[3] = top row
+            # Left column: dots {1, 2, 3, 7}
+            # Map: bottom row (heights[0]) → dot 7, second row (heights[1]) → dot 3,
+            #      third row (heights[2]) → dot 2, top row (heights[3]) → dot 1
+            if left_heights[0] > 0:  # Bottom row
+                bitmask |= (1 << (7 - 1))  # Dot 7 (bottom-left)
+            if left_heights[1] > 0:  # Second row from bottom
+                bitmask |= (1 << (3 - 1))  # Dot 3
+            if left_heights[2] > 0:  # Third row from bottom
+                bitmask |= (1 << (2 - 1))  # Dot 2
+            if left_heights[3] > 0:  # Top row
+                bitmask |= (1 << (1 - 1))  # Dot 1 (top-left)
+            
+            # Right column: dots {4, 5, 6, 8}
+            # Map: bottom row (heights[0]) → dot 8, second row (heights[1]) → dot 6,
+            #      third row (heights[2]) → dot 5, top row (heights[3]) → dot 4
+            if right_heights[0] > 0:  # Bottom row
+                bitmask |= (1 << (8 - 1))  # Dot 8 (bottom-right)
+            if right_heights[1] > 0:  # Second row from bottom
+                bitmask |= (1 << (6 - 1))  # Dot 6
+            if right_heights[2] > 0:  # Third row from bottom
+                bitmask |= (1 << (5 - 1))  # Dot 5
+            if right_heights[3] > 0:  # Top row
+                bitmask |= (1 << (4 - 1))  # Dot 4 (top-right)
+        
+        # Convert to braille character
+        codepoint = self.BRAILLE_BASE + bitmask
+        return chr(codepoint)
+    
+    """
+    Get the graph as a formatted string with colors using braille characters.
+    
+    Renders from top character row to bottom.
+    Each character packs a 2×4 virtual tile.
+    
+    Args:
+        renderer: ANSIRendererBase instance for color conversion
+    
+    Returns:
+        Formatted string with colored braille characters representing the history
+        (multiple lines, one per character row)
+    """
+    def get_graph_string(self, renderer: 'ANSIRendererBase') -> str:
+        if not self.history:
+            empty_glyph = self._pack_tile([0, 0, 0, 0], [0, 0, 0, 0])
+            return (empty_glyph * self.width_chars + '\n') * self.height_chars
+        
+        # Pad history if needed
+        if len(self.history) < self.virtual_width:
+            padding_virtual = self.virtual_width - len(self.history)
+            padded_history = [(0, self.min_value)] * padding_virtual + self.history
+        else:
+            # Take only the last virtual_width values
+            padded_history = self.history[-self.virtual_width:]
+        
+        # Get color list (default or custom)
+        if self.colors is None or len(self.colors) == 0:
+            colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
+        else:
+            colors = self.colors
+        
+        # Convert colors to RGB (handle both ANSI codes and RGB tuples)
+        rgb_colors = []
+        for color in colors:
+            if isinstance(color, tuple):
+                rgb_colors.append(color)
+            else:
+                rgb_colors.append(ansi_to_rgb(color))
+        
+        # Build a virtual raster grid
+        # virtual_grid[virtual_y][virtual_x] = 1 if filled, 0 if empty
+        if self.top_to_bottom:
+            # virtual_y = 0 is top, virtual_y = virtual_height-1 is bottom
+            virtual_grid = [[0 for _ in range(self.virtual_width)] for _ in range(self.virtual_height)]
+            
+            # Fill the grid from history data (fill from top downward)
+            for virtual_x, (height, _) in enumerate(padded_history):
+                # Fill from top (virtual_y = 0) down to height
+                for virtual_y in range(height):
+                    if virtual_y < self.virtual_height:
+                        virtual_grid[virtual_y][virtual_x] = 1
+        else:
+            # virtual_y = 0 is bottom, virtual_y = virtual_height-1 is top (default)
+            virtual_grid = [[0 for _ in range(self.virtual_width)] for _ in range(self.virtual_height)]
+            
+            # Fill the grid from history data (fill from bottom upward)
+            for virtual_x, (height, _) in enumerate(padded_history):
+                # Fill from bottom (virtual_y = 0) up to height
+                for virtual_y in range(height):
+                    if virtual_y < self.virtual_height:
+                        virtual_grid[virtual_y][virtual_x] = 1
+        
+        # Render character rows from top to bottom
+        graph_lines = []
+        for char_row in range(self.height_chars):
+            line_parts = []
+            if self.top_to_bottom:
+                # Top to bottom: top character row maps to virtual_y = 0
+                virtual_row_base = char_row * 4
+            else:
+                # Bottom to top: top character row maps to highest virtual_y
+                virtual_row_base = (self.height_chars - 1 - char_row) * 4
+            
+            # Render each character in this row
+            for char_col in range(self.width_chars):
+                virtual_col_base = char_col * 2
+                
+                # Get the 2×4 tile for this character
+                left_heights = []
+                right_heights = []
+                
+                if self.top_to_bottom:
+                    # TOP TO BOTTOM: virtual_y=0 is at top of grid
+                    # virtual_row_base = char_row * 4, so for char_row=0, virtual_row_base=0 (top)
+                    # We iterate tile_row from 0 to 3, which gives virtual_y from virtual_row_base to virtual_row_base+3
+                    # This means we're going from top to bottom of the tile
+                    # We want left_heights[0] = top row of tile, left_heights[3] = bottom row of tile
+                    for tile_row in range(4):
+                        virtual_y = virtual_row_base + tile_row
+                        if 0 <= virtual_y < self.virtual_height:
+                            # Left column
+                            left_heights.append(virtual_grid[virtual_y][virtual_col_base])
+                            # Right column
+                            right_heights.append(virtual_grid[virtual_y][virtual_col_base + 1])
+                        else:
+                            left_heights.append(0)
+                            right_heights.append(0)
+                    # left_heights[0] = top row of tile, left_heights[3] = bottom row of tile
+                    # This is the correct order for top_to_bottom=True
+                else:
+                    # BOTTOM TO TOP: Iterate from bottom to top of the tile
+                    # virtual_row_base is at the bottom, so we go from virtual_row_base up
+                    # We want left_heights[0] = bottom row, left_heights[3] = top row
+                    for tile_row in range(4):
+                        virtual_y = virtual_row_base + tile_row
+                        if virtual_y < self.virtual_height:
+                            # Left column
+                            left_heights.append(virtual_grid[virtual_y][virtual_col_base])
+                            # Right column
+                            right_heights.append(virtual_grid[virtual_y][virtual_col_base + 1])
+                        else:
+                            left_heights.append(0)
+                            right_heights.append(0)
+                    # left_heights[0] = bottom row, left_heights[3] = top row (correct order)
+                
+                # Pack into braille character
+                glyph = self._pack_tile(left_heights, right_heights)
+                
+                # Get color based on the maximum original value in this character's virtual columns
+                max_original = self.min_value
+                for vx in range(virtual_col_base, min(virtual_col_base + 2, len(padded_history))):
+                    if vx < len(padded_history):
+                        _, orig_val = padded_history[vx]
+                        max_original = max(max_original, orig_val)
+                
+                # Normalize original value to percentage (0-100) for color mapping
+                value_range = self.max_value - self.min_value
+                if value_range == 0:
+                    height_percent = 50.0
+                else:
+                    height_percent = ((max_original - self.min_value) / value_range) * 100.0
+                
+                # Interpolate color
+                rgb = self._interpolate_color_list(rgb_colors, height_percent)
+                
+                # Convert to ANSI color
+                if renderer._truecolor_support:
+                    color_code = rgb_to_ansitruecolor(*rgb)
+                else:
+                    color_code = rgb_to_ansi256(*rgb)
+                
+                line_parts.append(color_code + glyph)
+            
+            graph_lines.append(''.join(line_parts) + ANSIColors.RESET)
+        
+        return '\n'.join(graph_lines)
+    
+    """
+    Interpolate between colors in a list based on percentage.
+    
+    Args:
+        rgb_colors: List of RGB tuples
+        percent: Percentage value (0-100)
+    
+    Returns:
+        Interpolated RGB tuple
+    """
+    def _interpolate_color_list(self, rgb_colors: List[Tuple[int, int, int]], percent: float) -> Tuple[int, int, int]:
+        if len(rgb_colors) == 0:
+            return (128, 128, 128)  # Default gray
+        if len(rgb_colors) == 1:
+            return rgb_colors[0]
+        
+        # Map percent (0-100) to position in color list (0 to len-1)
+        max_index = len(rgb_colors) - 1
+        position = (percent / 100.0) * max_index
+        
+        # Find the two colors to interpolate between
+        lower_index = int(position)
+        upper_index = min(lower_index + 1, max_index)
+        
+        # If we're exactly at a color stop, return it
+        if lower_index == upper_index:
+            return rgb_colors[lower_index]
+        
+        # Calculate interpolation ratio between the two colors
+        ratio = position - lower_index
+        
+        # Interpolate between the two colors
+        return interpolate_rgb(rgb_colors[lower_index], rgb_colors[upper_index], ratio)
