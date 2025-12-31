@@ -5,7 +5,7 @@ Provides ANSI color codes, RGB conversion, and color interpolation utilities.
 """
 
 import os
-from typing import Tuple
+from typing import Tuple, List, Union
 
 
 class ANSIColors:
@@ -173,6 +173,82 @@ def interpolate_rgb(rgb1: Tuple[int, int, int], rgb2: Tuple[int, int, int], rati
     g = max(0, min(255, g))
     b = max(0, min(255, b))
     return (r, g, b)
+
+
+"""
+Interpolate between colors in a list based on percentage.
+
+This function provides a common way to interpolate colors across multiple stops,
+used by graphs, progress bars, and other gradient color features.
+
+Args:
+    rgb_colors: List of RGB tuples representing color stops
+    percent: Percentage value (0-100) to map to color stops
+    
+Returns:
+    Interpolated RGB tuple
+
+Example:
+    colors = [(0, 255, 0), (191, 255, 0), (255, 255, 255)]  # green -> lime -> white
+    color_at_25_percent = interpolate_color_list(colors, 25.0)  # Between green and lime
+    color_at_75_percent = interpolate_color_list(colors, 75.0)  # Between lime and white
+"""
+def interpolate_color_list(rgb_colors: list, percent: float) -> Tuple[int, int, int]:
+    if len(rgb_colors) == 0:
+        return (128, 128, 128)  # Default gray
+    if len(rgb_colors) == 1:
+        return rgb_colors[0]
+    
+    # Map percent (0-100) to position in color list (0 to len-1)
+    max_index = len(rgb_colors) - 1
+    position = (percent / 100.0) * max_index
+    
+    # Find the two colors to interpolate between
+    lower_index = int(position)
+    upper_index = min(lower_index + 1, max_index)
+    
+    # If we're exactly at a color stop, return it
+    if lower_index == upper_index:
+        return rgb_colors[lower_index]
+    
+    # Calculate interpolation ratio between the two colors
+    ratio = position - lower_index
+    
+    # Interpolate between the two colors
+    return interpolate_rgb(rgb_colors[lower_index], rgb_colors[upper_index], ratio)
+
+
+"""
+Get ANSI color code for a value using color interpolation.
+
+Converts a list of colors (ANSI codes or RGB tuples) to RGB, interpolates based on
+value percentage (0-100), and returns the appropriate ANSI color code.
+
+Args:
+    colors: List of color stops (ANSI codes or RGB tuples)
+    value_percent: Value as percentage (0-100)
+    truecolor_support: If True, use truecolor; if False, use 256-color mode
+    
+Returns:
+    ANSI color code string
+"""
+def get_gradient_color(colors: list, value_percent: float, truecolor_support: bool = True) -> str:
+    # Convert colors to RGB (handle both ANSI codes and RGB tuples)
+    rgb_colors = []
+    for color in colors:
+        if isinstance(color, tuple):
+            rgb_colors.append(color)
+        else:
+            rgb_colors.append(ansi_to_rgb(color))
+    
+    # Interpolate color
+    rgb = interpolate_color_list(rgb_colors, value_percent)
+    
+    # Convert to ANSI
+    if truecolor_support:
+        return rgb_to_ansitruecolor(*rgb)
+    else:
+        return rgb_to_ansi256(*rgb)
 
 
 """

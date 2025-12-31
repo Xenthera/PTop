@@ -17,7 +17,7 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from ptop.ui.ansi_renderer import ANSIRendererBase, ANSIColors, HLayout, VLayout, BaseLayout, get_panel_content_area
+from ptop.ui.ansi_renderer import ANSIRendererBase, ANSIColors, HLayout, VLayout, BaseLayout
 from ptop.ui.history_graph import SingleLineGraph, MultiLineGraph
 from ptop.ui.inline import InlineText, InlineBar, InlineGraph
 from ptop.ui.progress_bar import ProgressBar
@@ -157,14 +157,20 @@ def main():
         main_layout.add_layout(right_column)
         
         # VLayout for panel 5: header panel first, then graph panel
+        # Add it as a child of panel5_container so it's automatically clipped
         panel5_vlayout = VLayout(margin=0, spacing=1)
         panel5_vlayout.add_panel(panel5_header)
         panel5_vlayout.add_panel(panel5)
+        panel5_container.add_child(panel5_vlayout)  # Nest layout inside panel
         
         # Bottom row: panel 5 container, panel 6 (nested panels), and panel 7 horizontally
         bottom_layout = HLayout(margin=0, spacing=1)
         bottom_layout.add_panel(panel5_container)
         bottom_layout.add_panel(panel7)
+        
+        # Register layouts with renderer
+        renderer.add_layout(main_layout)
+        renderer.add_layout(bottom_layout)
         
         # Function to update all layouts based on current terminal size
         def update_all_layouts():
@@ -178,14 +184,19 @@ def main():
             bottom_height = content_height - main_height
             
             # Update main nested layout (this will recursively update nested VLayouts)
-            main_layout.update_layout(content_start_row, 1, cols, main_height)
+            main_layout.set_bounds(content_start_row, 1, cols, main_height)
+            main_layout.update()
             
-            # Update bottom layout
-            bottom_layout.update_layout(content_start_row + main_height + 1, 1, cols, bottom_height)
+            # Update bottom layout (this will update panel5_container's bounds)
+            bottom_layout.set_bounds(content_start_row + main_height + 1, 1, cols, bottom_height)
+            bottom_layout.update()
             
-            # Update VLayout inside panel5_container (use content area of container)
-            content_row, content_col, content_width, content_height = get_panel_content_area(panel5_container)
-            panel5_vlayout.update_layout(content_row, content_col, content_width, content_height)
+            # panel5_vlayout is a child of panel5_container, so update it to fit
+            # within its parent's content area. Since panel5_container's bounds
+            # were set by bottom_layout.update(), we can now update panel5_vlayout.
+            content_row, content_col, content_width, content_height = panel5_container.get_content_area()
+            panel5_vlayout.set_bounds(content_row, content_col, content_width, content_height)
+            panel5_vlayout.update()
         
         # Initial layout update
         update_all_layouts()

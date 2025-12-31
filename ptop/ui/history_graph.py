@@ -73,7 +73,10 @@ class SingleLineGraph:
         self.max_value = max_value
         # Store history at virtual-column resolution, quantized to 0-4
         # Store both quantized height and original value for color calculation
-        self.history: List[Tuple[int, float]] = []  # List of (quantized_height, original_value)
+        # Prefill history with zeros (height 1 dot, value min_value) to fill the graph width
+        # Height 1 ensures dots are visible (rendered as gray for min_value)
+        virtual_width = width * 2  # 2 virtual columns per character
+        self.history: List[Tuple[int, float]] = [(1, min_value)] * virtual_width
         self.use_braille = use_braille
         self.colors = colors
     
@@ -84,15 +87,21 @@ class SingleLineGraph:
     
     @width.setter
     def width(self, value: int) -> None:
-        """Set the character width and trim history if needed."""
+        """Set the character width and adjust history if needed."""
         old_virtual_width = self.virtual_width
         self._width = value
-        # Trim history if it exceeds the new virtual width
         new_virtual_width = self.virtual_width
+        
+        # Trim history if it exceeds the new virtual width
         if len(self.history) > new_virtual_width:
             # Keep only the most recent values (newest data on the right)
             # Remove oldest data from the left
             self.history = self.history[-new_virtual_width:]
+        # Pad history with zeros if it's shorter than the new virtual width
+        elif len(self.history) < new_virtual_width:
+            # Fill with gray dots (height 1, value min_value) on the left
+            padding_needed = new_virtual_width - len(self.history)
+            self.history = [(1, self.min_value)] * padding_needed + self.history
     
     @property
     def virtual_width(self) -> int:
@@ -123,6 +132,10 @@ class SingleLineGraph:
         # Quantize to 0-4 vertical units (virtual column height)
         quantized = int(math.floor(normalized * self.VIRTUAL_HEIGHT + FLOOR_EPSILON))
         quantized = max(0, min(self.VIRTUAL_HEIGHT, quantized))
+        
+        # Always show at least 1 dot high (even when value is 0 or very small)
+        if quantized == 0:
+            quantized = 1
         
         # Add to history at virtual-column resolution (store both quantized height and original value)
         self.history.append((quantized, value))
@@ -330,14 +343,22 @@ class SingleLineGraph:
             else:
                 height_percent = ((max_original - self.min_value) / value_range) * 100.0
             
-            # Interpolate color using the same logic as progress bars
-            rgb = self._interpolate_color_list(rgb_colors, height_percent)
-            
-            # Convert to ANSI color
-            if renderer._truecolor_support:
-                color_code = rgb_to_ansitruecolor(*rgb)
+            # Use gray color when value is about 0 (within 1% of range from min_value)
+            if height_percent <= 1.0:
+                # Use gray color for near-zero values
+                if renderer._truecolor_support:
+                    color_code = rgb_to_ansitruecolor(128, 128, 128)
+                else:
+                    color_code = ANSIColors.BRIGHT_BLACK
             else:
-                color_code = rgb_to_ansi256(*rgb)
+                # Interpolate color using the same logic as progress bars
+                rgb = self._interpolate_color_list(rgb_colors, height_percent)
+                
+                # Convert to ANSI color
+                if renderer._truecolor_support:
+                    color_code = rgb_to_ansitruecolor(*rgb)
+                else:
+                    color_code = rgb_to_ansi256(*rgb)
             
             graph_parts.append(color_code + glyph)
         
@@ -702,22 +723,21 @@ class MultiLineGraph:
                 # Pack into braille character
                 glyph = self._pack_tile(left_heights, right_heights)
                 
-                # Get color based on the maximum original value in this character's virtual columns
-                max_original = self.min_value
-                for vx in range(virtual_col_base, min(virtual_col_base + 2, len(padded_history))):
-                    if vx < len(padded_history):
-                        _, orig_val = padded_history[vx]
-                        max_original = max(max_original, orig_val)
-                
-                # Normalize original value to percentage (0-100) for color mapping
-                value_range = self.max_value - self.min_value
-                if value_range == 0:
-                    height_percent = 50.0
+                # Color based on vertical position (row position) rather than value
+                # For normal orientation (top_to_bottom=False): bottom = 0%, top = 100%
+                # For flipped orientation (top_to_bottom=True): top = 0%, bottom = 100%
+                if self.top_to_bottom:
+                    # Top to bottom: char_row 0 is top, so position increases downward
+                    # Top row (char_row=0) should map to first color (0%), bottom to last color (100%)
+                    position_percent = (char_row / (self.height_chars - 1)) * 100.0 if self.height_chars > 1 else 0.0
                 else:
-                    height_percent = ((max_original - self.min_value) / value_range) * 100.0
+                    # Bottom to top: char_row 0 is top row visually, but represents highest virtual_y
+                    # Bottom should map to first color (0%), top to last color (100%)
+                    # So we reverse: char_row 0 (top visual) = 100%, char_row height_chars-1 (bottom visual) = 0%
+                    position_percent = ((self.height_chars - 1 - char_row) / (self.height_chars - 1)) * 100.0 if self.height_chars > 1 else 0.0
                 
-                # Interpolate color
-                rgb = self._interpolate_color_list(rgb_colors, height_percent)
+                # Interpolate color based on position
+                rgb = self._interpolate_color_list(rgb_colors, position_percent)
                 
                 # Convert to ANSI color
                 if renderer._truecolor_support:

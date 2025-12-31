@@ -52,10 +52,165 @@ from .colors import (
 
 
 # ============================================================================
+# Container Base Class
+# ============================================================================
+
+class Container:
+    """
+    Base class for all UI containers (panels and layouts).
+    
+    Containers have bounds, can contain other containers, and automatically
+    clip children to their content area.
+    """
+    
+    """
+    Initialize a container.
+    
+    Args:
+        row: Top row position (1-based)
+        col: Left column position (1-based)
+        width: Container width in characters
+        height: Container height in lines
+        z: Z-order for rendering (lower values render first, default: 0)
+    """
+    def __init__(self, row: int, col: int, width: int, height: int, z: int = 0):
+        self.row = row
+        self.col = col
+        self.width = width
+        self.height = height
+        self.z = z
+        self.children: List['Container'] = []
+        self.parent: Optional['Container'] = None
+    
+    """
+    Get the content area of this container.
+    
+    For bordered panels, this is the area inside the borders.
+    For borderless panels and layouts, this is the full bounds.
+    
+    Returns:
+        Tuple of (content_row, content_col, content_width, content_height)
+    """
+    def get_content_area(self) -> Tuple[int, int, int, int]:
+        # Default implementation: full bounds (overridden by Panel for bordered)
+        return (self.row, self.col, self.width, self.height)
+    
+    """
+    Add a child container.
+    
+    Args:
+        child: Container to add as child
+    """
+    def add_child(self, child: 'Container') -> None:
+        if child.parent is not None:
+            child.parent.remove_child(child)
+        self.children.append(child)
+        child.parent = self
+    
+    """
+    Remove a child container.
+    
+    Args:
+        child: Container to remove
+    """
+    def remove_child(self, child: 'Container') -> None:
+        if child in self.children:
+            self.children.remove(child)
+            child.parent = None
+    
+    """
+    Set the bounds of this container.
+    
+    Args:
+        row: Top row position (1-based)
+        col: Left column position (1-based)
+        width: Container width
+        height: Container height
+    """
+    def set_bounds(self, row: int, col: int, width: int, height: int) -> None:
+        self.row = row
+        self.col = col
+        self.width = width
+        self.height = height
+    
+    """
+    Render this container and its children.
+    
+    This is called by the renderer. Containers should render themselves,
+    then render their children (clipped to content area).
+    
+    Args:
+        renderer: The ANSI renderer instance
+        force_redraw: If True, force redraw even if unchanged
+    
+    Returns:
+        List of strings representing rendered lines
+    """
+    def render(self, renderer: 'ANSIRendererBase', force_redraw: bool = False) -> List[str]:
+        raise NotImplementedError("Subclasses must implement render()")
+    
+    """
+    Render children of this container, clipped to content area.
+    
+    Args:
+        renderer: The ANSI renderer instance
+        force_redraw: If True, force redraw even if unchanged
+        clip_row: Optional external clipping region (intersects with content area)
+        clip_col: Optional external clipping region
+        clip_width: Optional external clipping region
+        clip_height: Optional external clipping region
+    """
+    def render_children(self, renderer: 'ANSIRendererBase', force_redraw: bool = False,
+                       clip_row: Optional[int] = None, clip_col: Optional[int] = None,
+                       clip_width: Optional[int] = None, clip_height: Optional[int] = None) -> None:
+        content_row, content_col, content_width, content_height = self.get_content_area()
+        
+        # Calculate effective clipping region (intersection of content area and external clip)
+        if clip_row is not None and clip_col is not None and clip_width is not None and clip_height is not None:
+            # Intersect external clip with content area
+            clip_left = max(clip_col, content_col)
+            clip_top = max(clip_row, content_row)
+            clip_right = min(clip_col + clip_width - 1, content_col + content_width - 1)
+            clip_bottom = min(clip_row + clip_height - 1, content_row + content_height - 1)
+            
+            if clip_left > clip_right or clip_top > clip_bottom:
+                return  # No intersection, nothing to render
+            
+            effective_clip_row = clip_top
+            effective_clip_col = clip_left
+            effective_clip_width = clip_right - clip_left + 1
+            effective_clip_height = clip_bottom - clip_top + 1
+        else:
+            # No external clipping, use content area
+            effective_clip_row = content_row
+            effective_clip_col = content_col
+            effective_clip_width = content_width
+            effective_clip_height = content_height
+        
+        # Sort children by z-order (lower z renders first)
+        sorted_children = sorted(self.children, key=lambda c: c.z)
+        
+        for child in sorted_children:
+            # Calculate child bounds
+            child_bottom = child.row + child.height - 1
+            child_right = child.col + child.width - 1
+            
+            # Skip if child is completely outside effective clipping region
+            if (child_bottom < effective_clip_row or child.row > effective_clip_row + effective_clip_height - 1 or
+                child_right < effective_clip_col or child.col > effective_clip_col + effective_clip_width - 1):
+                continue
+            
+            # Pass the effective clipping region to child
+            renderer._render_container(child, force_redraw=force_redraw,
+                                      clip_row=effective_clip_row, clip_col=effective_clip_col,
+                                      clip_width=effective_clip_width, clip_height=effective_clip_height)
+
+
+# ============================================================================
 # Panel Class
 # ============================================================================
 
-class Panel:
+class Panel(Container):
     """
     Represents a panel/viewport in the terminal.
     
@@ -84,19 +239,17 @@ class Panel:
     def __init__(self, row: int, col: int, width: int, height: int, title: str = "", 
                  rounded: bool = False, border_color: Optional[str] = None, borderless: bool = False,
                  z: int = 0, max_width: Optional[int] = None, max_height: Optional[int] = None):
-        self.row = row
-        self.col = col
-        self.width = width
-        self.height = height
+        super().__init__(row, col, width, height, z)
         self.title = title
         self.rounded = rounded
         self.border_color = border_color
         self.borderless = borderless
-        self.z = z
         self.max_width = max_width
         self.max_height = max_height
         self.left_labels: List[str] = []
         self.right_labels: List[str] = []
+        self.bottom_left_labels: List[str] = []
+        self.bottom_right_labels: List[str] = []
         # Title is always the first left-aligned label (only if not borderless)
         if title and not borderless:
             self.left_labels.append(title)
@@ -130,10 +283,36 @@ class Panel:
         if label:
             self.right_labels.append(label)
     
+    """
+    Add a left-aligned label to the bottom border.
+    
+    Labels are packed to the left side of the border.
+    
+    Args:
+        label: Label text to add (will be formatted with spaces)
+    """
+    def add_bottom_left_label(self, label: str) -> None:
+        if label:
+            self.bottom_left_labels.append(label)
+    
+    """
+    Add a right-aligned label to the bottom border.
+    
+    Labels are packed to the right side of the border.
+    
+    Args:
+        label: Label text to add (will be formatted with spaces)
+    """
+    def add_bottom_right_label(self, label: str) -> None:
+        if label:
+            self.bottom_right_labels.append(label)
+    
     """Clear all labels, keeping only the title as first left label."""
     def clear_labels(self) -> None:
         self.left_labels = []
         self.right_labels = []
+        self.bottom_left_labels = []
+        self.bottom_right_labels = []
         if self.title:
             self.left_labels.append(self.title)
     
@@ -153,7 +332,7 @@ class Panel:
     """
     def add_line(self, line: str) -> None:
         # Truncate to fit panel width (accounting for borders)
-        max_width = self.width - 2
+        max_width = self.width if self.borderless else self.width - 2
         visible_len = visible_length(line)
         
         if visible_len > max_width:
@@ -208,7 +387,7 @@ class Panel:
                     elem.renderer = renderer
         
         # Use panel width minus borders for available width
-        available_width = self.width - 2
+        available_width = self.width if self.borderless else self.width - 2
         line = compose_inline_width(available_width, *elements, separator=separator)
         
         # Re-render all resizable elements after composition to ensure they're updated
@@ -220,6 +399,22 @@ class Panel:
                     elem._render()
         
         self.add_line(line)
+    
+    """
+    Get the content area of this panel.
+    
+    For bordered panels, returns area inside borders.
+    For borderless panels, returns full bounds.
+    
+    Returns:
+        Tuple of (content_row, content_col, content_width, content_height)
+    """
+    def get_content_area(self) -> Tuple[int, int, int, int]:
+        if self.borderless:
+            return (self.row, self.col, self.width, self.height)
+        else:
+            # Content area is inside borders: row+1, col+1, width-2, height-2
+            return (self.row + 1, self.col + 1, self.width - 2, self.height - 2)
     
     """
     Check if panel content or dimensions have changed since last render.
@@ -286,29 +481,38 @@ class Panel:
         def colorize_match(match):
             return self._apply_border_color(match.group(0))
         
-        # Match border characters: ┐, ┌, or sequences of ─
-        result = re.sub(r'[┐┌]|─+', colorize_match, border_with_labels)
+        # Match border characters: ┐, ┌, ┘, └, or sequences of ─
+        result = re.sub(r'[┐┌┘└]|─+', colorize_match, border_with_labels)
         return result
     
     """
-    Format labels with separators (┐ label ┌).
+    Format labels with separators (┐ label ┌ for top, ┘ label └ for bottom).
     
     Args:
         labels: List of label strings
         horizontal_char: Horizontal line character for spacing
+        is_bottom: If True, use bottom corner characters (┘ and └), else use top (┐ and ┌)
     
     Returns:
         Formatted label string with separators
     """
-    def _format_labels(self, labels: List[str], horizontal_char: str) -> str:
+    def _format_labels(self, labels: List[str], horizontal_char: str, is_bottom: bool = False) -> str:
         if not labels:
             return ""
         
+        # Use bottom corners for bottom labels, top corners for top labels
+        if is_bottom:
+            left_sep = "┘"  # Bottom-right corner
+            right_sep = "└"  # Bottom-left corner
+        else:
+            left_sep = "┐"  # Top-right corner
+            right_sep = "┌"  # Top-left corner
+        
         formatted = []
         for i, label in enumerate(labels):
-            formatted.append("┐")
+            formatted.append(left_sep)
             formatted.append(f" {label} ")
-            formatted.append("┌")
+            formatted.append(right_sep)
             # Add horizontal lines between labels (except after last)
             if i < len(labels) - 1:
                 formatted.append(horizontal_char * LABEL_SEPARATOR_SPACING)
@@ -396,23 +600,74 @@ class Panel:
         return lines
     
     """
-    Build bottom border.
+    Build bottom border with labels.
     
     Returns:
         Formatted bottom border string
     """
     def _build_bottom_border(self) -> str:
         _, _, bl, br, h, _ = self._get_border_chars()
-        bottom_border = bl + h * (self.width - 2) + br
-        return ANSIColors.BOLD + self._apply_border_color(bottom_border) + ANSIColors.RESET
+        available_width = self.width - 2  # Account for corner characters
+        
+        # Format labels
+        left_text = self._format_labels(self.bottom_left_labels, h, is_bottom=True)
+        right_text = self._format_labels(self.bottom_right_labels, h, is_bottom=True)
+        
+        left_len = visible_length(left_text)
+        right_len = visible_length(right_text)
+        total_label_len = left_len + right_len
+        
+        # Handle truncation if labels are too long
+        if total_label_len >= available_width:
+            if left_text and right_text:
+                max_left = min(left_len, available_width - 1)
+                if left_len > max_left:
+                    left_text = left_text[:max_left]
+                    left_len = max_left
+                remaining = available_width - left_len
+                if right_len > remaining:
+                    right_text = right_text[:remaining]
+            elif left_text and left_len > available_width:
+                left_text = left_text[:available_width]
+            elif right_text and right_len > available_width:
+                right_text = right_text[:available_width]
+        
+        # Build border string
+        if not left_text and not right_text:
+            # No labels - just horizontal line
+            bottom_border = bl + h * available_width + br
+            return ANSIColors.BOLD + self._apply_border_color(bottom_border) + ANSIColors.RESET
+        
+        # Labels exist - pack left and right with horizontal lines in between
+        middle_space = max(0, available_width - left_len - right_len)
+        bottom_border = bl + left_text + h * middle_space + right_text + br
+        
+        # Apply color to border parts only
+        colored_bl = self._apply_border_color(bl)
+        colored_br = self._apply_border_color(br)
+        colored_left = self._colorize_border_only(left_text)
+        colored_right = self._colorize_border_only(right_text)
+        colored_middle = self._apply_border_color(h * middle_space) if middle_space > 0 else ""
+        
+        return ANSIColors.BOLD + colored_bl + colored_left + colored_middle + colored_right + colored_br + ANSIColors.RESET
     
     """
     Render the panel as a list of ANSI strings.
     
+    This renders only the panel itself (borders and content).
+    Children are rendered separately by the renderer.
+    
+    Args:
+        renderer: The ANSI renderer instance (unused, kept for interface compatibility)
+        force_redraw: If True, force redraw even if unchanged
+    
     Returns:
         List of strings, each representing a line of the panel
     """
-    def render(self) -> List[str]:
+    def render(self, renderer: 'ANSIRendererBase' = None, force_redraw: bool = False) -> List[str]:
+        if not force_redraw and not self.has_changed():
+            return self._last_rendered_lines
+        
         lines = []
         
         if self.borderless:
@@ -433,8 +688,20 @@ class Panel:
             available_width = self.width - 2  # Account for corner characters
             lines.append(self._build_top_border(available_width))
             
-            # Content lines
-            lines.extend(self._build_content_lines())
+            # Content lines - if panel has children but no content, skip rendering
+            # empty content lines that would clear the children area
+            if self.content_lines or not self.children:
+                lines.extend(self._build_content_lines())
+            else:
+                # Panel has children but no content - render border structure only
+                # Children will render in the content area, so we don't want to clear it
+                _, _, _, _, _, v = self._get_border_chars()
+                content_height = self.height - 2
+                for _ in range(content_height):
+                    left_border = self._apply_border_color(v)
+                    right_border = self._apply_border_color(v)
+                    # Render borders only, leave content area empty for children
+                    lines.append(left_border + ' ' * (self.width - 2) + right_border)
             
             # Bottom border
             lines.append(self._build_bottom_border())
@@ -447,25 +714,7 @@ class Panel:
 # Layout System
 # ============================================================================
 
-"""
-Get the content area dimensions of a panel (for placing layouts inside).
-
-Args:
-    panel: Panel to get content area for
-
-Returns:
-    Tuple of (content_row, content_col, content_width, content_height)
-    For borderless panels, returns the full panel dimensions.
-    For bordered panels, returns the area inside the borders.
-"""
-def get_panel_content_area(panel: Panel) -> Tuple[int, int, int, int]:
-    if panel.borderless:
-        return (panel.row, panel.col, panel.width, panel.height)
-    else:
-        # Content area is inside borders: row+1, col+1, width-2, height-2
-        return (panel.row + 1, panel.col + 1, panel.width - 2, panel.height - 2)
-
-class BaseLayout:
+class BaseLayout(Container):
     """
     Base class for layout managers.
     
@@ -477,43 +726,82 @@ class BaseLayout:
     Initialize a layout.
     
     Args:
+        row: Top row position (1-based)
+        col: Left column position (1-based)
+        width: Layout width in characters
+        height: Layout height in lines
         margin: Margin around the layout (default: 0)
         spacing: Spacing between items (default: 1)
+        z: Z-order for rendering (default: 0)
     """
-    def __init__(self, margin: int = 0, spacing: int = 1):
+    def __init__(self, row: int = 1, col: int = 1, width: int = 80, height: int = 24,
+                 margin: int = 0, spacing: int = 1, z: int = 0):
+        super().__init__(row, col, width, height, z)
         self.margin = margin
         self.spacing = spacing
-        self.items: List[Any] = []  # Can contain both Panel and BaseLayout objects
     
     """
-    Add a panel to this layout.
+    Get the content area of this layout.
+    
+    Content area accounts for margins.
+    
+    Returns:
+        Tuple of (content_row, content_col, content_width, content_height)
+    """
+    def get_content_area(self) -> Tuple[int, int, int, int]:
+        return (self.row + self.margin, self.col + self.margin,
+                self.width - (2 * self.margin), self.height - (2 * self.margin))
+    
+    """
+    Add a child container (panel or layout).
+    
+    Args:
+        child: Container to add
+    """
+    def add_child(self, child: Container) -> None:
+        super().add_child(child)
+    
+    """
+    Add a panel to this layout (convenience method, same as add_child).
     
     Args:
         panel: Panel to add
     """
     def add_panel(self, panel: Panel) -> None:
-        self.items.append(panel)
+        self.add_child(panel)
     
     """
-    Add a nested layout to this layout.
+    Add a nested layout to this layout (convenience method, same as add_child).
     
     Args:
-        layout: Layout to nest (HLayout or VLayout)
+        layout: Layout to nest
     """
     def add_layout(self, layout: 'BaseLayout') -> None:
-        self.items.append(layout)
+        self.add_child(layout)
     
     """
-    Update panel positions and sizes based on layout constraints.
+    Update layout: arrange children within content area.
+    
+    This should be called when the layout's bounds change or when
+    children need to be repositioned.
+    """
+    def update(self) -> None:
+        raise NotImplementedError("Subclasses must implement update()")
+    
+    """
+    Render this layout (renders children only, layouts have no visual representation).
     
     Args:
-        start_row: Starting row position (1-based)
-        start_col: Starting column position (1-based)
-        width: Available width
-        height: Available height
+        renderer: The ANSI renderer instance
+        force_redraw: If True, force redraw even if unchanged
+    
+    Returns:
+        Empty list (layouts don't render themselves, only children)
     """
-    def update_layout(self, start_row: int, start_col: int, width: int, height: int) -> None:
-        raise NotImplementedError("Subclasses must implement update_layout")
+    def render(self, renderer: 'ANSIRendererBase' = None, force_redraw: bool = False) -> List[str]:
+        # Layouts don't render themselves, only arrange children
+        # Children are rendered by the renderer
+        return []
 
 
 class HLayout(BaseLayout):
@@ -524,41 +812,31 @@ class HLayout(BaseLayout):
     """
     
     """
-    Update panel/layout positions and sizes for horizontal layout.
-    
-    Args:
-        start_row: Starting row position (1-based)
-        start_col: Starting column position (1-based)
-        width: Available width
-        height: Available height
+    Update layout: arrange children horizontally within content area.
     """
-    def update_layout(self, start_row: int, start_col: int, width: int, height: int) -> None:
-        if not self.items:
+    def update(self) -> None:
+        if not self.children:
             return
         
-        available_width = width - (2 * self.margin)
-        available_height = height - (2 * self.margin)
+        content_row, content_col, content_width, content_height = self.get_content_area()
         
-        num_items = len(self.items)
+        num_items = len(self.children)
         if num_items == 0:
             return
         
         # Calculate base item width
         total_spacing = self.spacing * (num_items - 1)
-        base_item_width = (available_width - total_spacing) // num_items
+        base_item_width = (content_width - total_spacing) // num_items
         
         # Apply max_width constraints and redistribute space
-        panel_items = [item for item in self.items if isinstance(item, Panel)]
-        layout_items = [item for item in self.items if isinstance(item, BaseLayout)]
-        
         # First pass: calculate actual widths considering max_width
         actual_widths = []
         total_used_width = 0
         flexible_items = []
         
-        for item in self.items:
-            if isinstance(item, Panel) and item.max_width is not None:
-                actual_width = min(base_item_width, item.max_width)
+        for child in self.children:
+            if isinstance(child, Panel) and child.max_width is not None:
+                actual_width = min(base_item_width, child.max_width)
                 actual_widths.append(actual_width)
                 total_used_width += actual_width
             else:
@@ -567,7 +845,7 @@ class HLayout(BaseLayout):
                 flexible_items.append(len(actual_widths) - 1)
         
         # Redistribute remaining space to flexible items
-        remaining_width = available_width - total_spacing - total_used_width
+        remaining_width = content_width - total_spacing - total_used_width
         if remaining_width > 0 and flexible_items:
             extra_per_item = remaining_width // len(flexible_items)
             for idx in flexible_items:
@@ -579,16 +857,12 @@ class HLayout(BaseLayout):
                     actual_widths[idx] += 1
         
         # Position items horizontally
-        current_col = start_col + self.margin
-        for i, item in enumerate(self.items):
+        current_col = content_col
+        for i, child in enumerate(self.children):
             item_width = actual_widths[i]
-            if isinstance(item, Panel):
-                item.row = start_row + self.margin
-                item.col = current_col
-                item.width = item_width
-                item.height = available_height
-            elif isinstance(item, BaseLayout):
-                item.update_layout(start_row + self.margin, current_col, item_width, available_height)
+            child.set_bounds(content_row, current_col, item_width, content_height)
+            if isinstance(child, BaseLayout):
+                child.update()  # Recursively update nested layouts
             current_col += item_width + self.spacing
 
 
@@ -600,28 +874,21 @@ class VLayout(BaseLayout):
     """
     
     """
-    Update panel/layout positions and sizes for vertical layout.
-    
-    Args:
-        start_row: Starting row position (1-based)
-        start_col: Starting column position (1-based)
-        width: Available width
-        height: Available height
+    Update layout: arrange children vertically within content area.
     """
-    def update_layout(self, start_row: int, start_col: int, width: int, height: int) -> None:
-        if not self.items:
+    def update(self) -> None:
+        if not self.children:
             return
         
-        available_width = width - (2 * self.margin)
-        available_height = height - (2 * self.margin)
+        content_row, content_col, content_width, content_height = self.get_content_area()
         
-        num_items = len(self.items)
+        num_items = len(self.children)
         if num_items == 0:
             return
         
         # Calculate base item height
         total_spacing = self.spacing * (num_items - 1)
-        base_item_height = (available_height - total_spacing) // num_items
+        base_item_height = (content_height - total_spacing) // num_items
         
         # Apply max_height constraints and redistribute space
         # First pass: calculate actual heights considering max_height
@@ -629,9 +896,9 @@ class VLayout(BaseLayout):
         total_used_height = 0
         flexible_items = []
         
-        for item in self.items:
-            if isinstance(item, Panel) and item.max_height is not None:
-                actual_height = min(base_item_height, item.max_height)
+        for child in self.children:
+            if isinstance(child, Panel) and child.max_height is not None:
+                actual_height = min(base_item_height, child.max_height)
                 actual_heights.append(actual_height)
                 total_used_height += actual_height
             else:
@@ -640,7 +907,7 @@ class VLayout(BaseLayout):
                 flexible_items.append(len(actual_heights) - 1)
         
         # Redistribute remaining space to flexible items
-        remaining_height = available_height - total_spacing - total_used_height
+        remaining_height = content_height - total_spacing - total_used_height
         if remaining_height > 0 and flexible_items:
             extra_per_item = remaining_height // len(flexible_items)
             for idx in flexible_items:
@@ -653,29 +920,26 @@ class VLayout(BaseLayout):
         
         # Ensure total height doesn't exceed available space
         total_actual_height = sum(actual_heights) + total_spacing
-        if total_actual_height > available_height:
+        if total_actual_height > content_height:
             # Reduce heights proportionally to fit
-            scale_factor = available_height / total_actual_height
+            scale_factor = content_height / total_actual_height
             for i in range(len(actual_heights)):
                 actual_heights[i] = int(actual_heights[i] * scale_factor)
             # Recalculate total and adjust if needed
             total_actual_height = sum(actual_heights) + total_spacing
-            if total_actual_height < available_height:
+            if total_actual_height < content_height:
                 # Add back any lost space to the last flexible item
-                diff = available_height - total_actual_height
+                diff = content_height - total_actual_height
                 for idx in reversed(flexible_items):
                     if diff > 0:
                         actual_heights[idx] += diff
                         break
         
         # Position items vertically
-        # Calculate bounds: content area is from start_row to start_row + height - 1 (inclusive)
-        # With margin, usable area is from start_row + margin to start_row + margin + available_height - 1
-        content_start_row = start_row + self.margin
-        content_end_row = start_row + self.margin + available_height - 1  # Inclusive
+        content_end_row = content_row + content_height - 1  # Inclusive
         
-        current_row = content_start_row
-        for i, item in enumerate(self.items):
+        current_row = content_row
+        for i, child in enumerate(self.children):
             item_height = actual_heights[i]
             
             # Calculate where this panel would end (inclusive)
@@ -686,16 +950,11 @@ class VLayout(BaseLayout):
                 item_height = max(1, content_end_row - current_row + 1)
                 panel_bottom = current_row + item_height - 1
             
-            if isinstance(item, Panel):
-                item.row = current_row
-                item.col = start_col + self.margin
-                item.width = available_width
-                item.height = item_height
-            elif isinstance(item, BaseLayout):
-                item.update_layout(current_row, start_col + self.margin, available_width, item_height)
+            child.set_bounds(current_row, content_col, content_width, item_height)
+            if isinstance(child, BaseLayout):
+                child.update()  # Recursively update nested layouts
             
             # Move to next position (accounting for spacing)
-            # Next panel starts after this one ends, plus spacing
             current_row = panel_bottom + 1 + self.spacing
             
             # Stop if we've exceeded the available space
@@ -774,8 +1033,9 @@ class ANSIRendererBase(BaseRenderer):
     """Initialize the base ANSI renderer."""
     def __init__(self):
         self.terminal_size: Tuple[int, int] = (DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS)
-        self.panels: Dict[str, Panel] = {}
-        self.layouts: List[BaseLayout] = []
+        self.panels: Dict[str, Panel] = {}  # Keep for backward compatibility
+        self.containers: List[Container] = []  # Unified container registry
+        self.layouts: List[BaseLayout] = []  # Keep for backward compatibility
         self._initialized = False
         self._header_lines = HEADER_LINES
         self._truecolor_support = _supports_truecolor()
@@ -828,13 +1088,14 @@ class ANSIRendererBase(BaseRenderer):
     Returns:
         Created Panel object
     """
-    def create_panel(self, panel_id: str, row: int, col: int, width: int, height: int, 
+    def create_panel(self, panel_id: str, row: int = 1, col: int = 1, width: int = 80, height: int = 24, 
                      title: str = "", rounded: bool = False, border_color: Optional[str] = None,
                      borderless: bool = False, z: int = 0, max_width: Optional[int] = None,
                      max_height: Optional[int] = None) -> Panel:
         panel = Panel(row, col, width, height, title, rounded=rounded, border_color=border_color, 
                      borderless=borderless, z=z, max_width=max_width, max_height=max_height)
         self.panels[panel_id] = panel
+        self.containers.append(panel)  # Add to unified registry
         return panel
     
     """
@@ -893,6 +1154,7 @@ class ANSIRendererBase(BaseRenderer):
     """
     def add_layout(self, layout: BaseLayout) -> None:
         self.layouts.append(layout)
+        self.containers.append(layout)  # Add to unified registry
     
     """
     Update all layouts based on current terminal size.
@@ -907,7 +1169,8 @@ class ANSIRendererBase(BaseRenderer):
         content_height = rows - self._header_lines
         
         for layout in self.layouts:
-            layout.update_layout(content_start_row, content_start_col, content_width, content_height)
+            layout.set_bounds(content_start_row, content_start_col, content_width, content_height)
+            layout.update()
     
     """
     Create a horizontal progress bar with gradient colors.
@@ -1024,22 +1287,95 @@ class ANSIRendererBase(BaseRenderer):
         return clipped
     
     """
-    Render all registered panels, sorted by z-order.
+    Render all registered containers, sorted by z-order.
     
-    Panels with lower z values are rendered first (appear behind).
-    Panels with higher z values are rendered last (appear on top).
+    Containers with lower z values are rendered first (appear behind).
+    Containers with higher z values are rendered last (appear on top).
+    Children are automatically clipped to parent content areas.
     
     Args:
-        force_redraw: If True, redraw all panels even if content unchanged
+        force_redraw: If True, redraw all containers even if content unchanged
     """
     def render_all_panels(self, force_redraw: bool = False) -> None:
-        # Sort panels by z-order (lower z renders first)
-        sorted_panels = sorted(self.panels.values(), key=lambda p: p.z)
-        for panel in sorted_panels:
-            self.render_panel(panel, force_redraw=force_redraw)
+        # Sort containers by z-order (lower z renders first)
+        sorted_containers = sorted(self.containers, key=lambda c: c.z)
+        
+        # Render only root containers (those without parents)
+        # Children will be rendered recursively
+        for container in sorted_containers:
+            if container.parent is None:
+                self._render_container(container, force_redraw=force_redraw)
+    
+    """
+    Render a container and its children.
+    
+    This is the internal rendering method that handles clipping automatically.
+    
+    Args:
+        container: Container to render
+        force_redraw: If True, force redraw even if unchanged
+        clip_row: Optional clipping region (for nested containers)
+        clip_col: Optional clipping region
+        clip_width: Optional clipping region
+        clip_height: Optional clipping region
+    """
+    def _render_container(self, container: Container, force_redraw: bool = False,
+                         clip_row: Optional[int] = None, clip_col: Optional[int] = None,
+                         clip_width: Optional[int] = None, clip_height: Optional[int] = None) -> None:
+        # Render the container itself
+        container_lines = container.render(self, force_redraw=force_redraw)
+        
+        # Render container lines with clipping
+        cols, rows = self.terminal_size
+        for i, line in enumerate(container_lines):
+            render_row = container.row + i
+            
+            # Skip if outside clipping region vertically
+            if clip_row is not None and clip_height is not None:
+                if render_row < clip_row or render_row > clip_row + clip_height - 1:
+                    continue
+            
+            # Calculate horizontal clipping for this line
+            render_col = container.col
+            clipped_line = line
+            
+            if clip_col is not None and clip_width is not None:
+                clip_right = clip_col + clip_width - 1
+                
+                # Container starts before clip region
+                if container.col < clip_col:
+                    start_offset = clip_col - container.col
+                    max_width = min(clip_width, container.width - start_offset)
+                    clipped_line = self._clip_line(line, max_width, start_offset)
+                    render_col = clip_col
+                # Container extends beyond clip region
+                elif container.col + container.width - 1 > clip_right:
+                    max_width = clip_width - (container.col - clip_col)
+                    if max_width > 0:
+                        clipped_line = self._clip_line(line, max_width, 0)
+                    else:
+                        continue  # Line is completely outside clip region
+                # Container is within clip region
+                else:
+                    clipped_line = line
+            
+            # Move cursor and render line
+            self.move_cursor(render_row, render_col)
+            sys.stdout.write(clipped_line)
+            # Only write newline if not on the last row of the terminal (prevents scrolling)
+            if render_row < rows:
+                sys.stdout.write('\n')
+        
+        # Render children (automatically clipped to container's content area and external clip region)
+        container.render_children(self, force_redraw=force_redraw,
+                                 clip_row=clip_row, clip_col=clip_col,
+                                 clip_width=clip_width, clip_height=clip_height)
     
     """
     Render a panel at its position with optional clipping.
+    
+    This is kept for backward compatibility. New code should use render_all_panels()
+    which automatically handles clipping based on parent containers.
     
     Args:
         panel: Panel to render

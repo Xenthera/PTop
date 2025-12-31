@@ -27,15 +27,13 @@ def main():
     Creates and runs the PTopApp instance.
     """
     parser = argparse.ArgumentParser(description='PTop - Terminal system monitor')
-    parser.add_argument('--ansi', action='store_true', 
-                       help='Use ANSI renderer with panels and colors')
     parser.add_argument('--interval', type=float, default=1.0,
                        help='Update interval in seconds (default: 1.0)')
     
     args = parser.parse_args()
     
     # Create application instance
-    app = PTopApp(update_interval=args.interval, use_ansi=args.ansi)
+    app = PTopApp(update_interval=0.2)
     
     # Run the application
     app.run()

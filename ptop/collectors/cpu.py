@@ -8,6 +8,7 @@ temperature, and power consumption (where available).
 
 import platform
 import psutil
+import re
 from typing import Dict, Any, List, Tuple, Optional
 
 try:
@@ -152,6 +153,87 @@ class CPUCollector(BaseCollector):
         """
         return self._cpu_name or 'Unknown CPU'
     
+    def get_cpu_name_simple(self) -> str:
+        """
+        Get a simplified CPU name suitable for UI display.
+        
+        Converts long vendor CPU brand strings into compact identifiers,
+        matching btop's behavior. This is heuristic string parsing for UI purposes.
+        
+        Returns:
+            Simplified CPU name string, e.g., "i7-10700K", "Ryzen 9 5900X", "Apple M1"
+        """
+        if not self._cpu_name:
+            return 'Unknown'
+        
+        # Step 1: Remove trademark and filler tokens: (R), (TM), CPU, Processor
+        cleaned = self._cpu_name
+        cleaned = re.sub(r'\(R\)', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\(TM\)', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bCPU\b', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bProcessor\b', '', cleaned, flags=re.IGNORECASE)
+        
+        # Step 2: Strip frequency information: "@ <number>GHz"
+        cleaned = re.sub(r'@\s*\d+\.?\d*\s*GHz', '', cleaned, flags=re.IGNORECASE)
+        
+        # Step 3: Normalize whitespace (multiple spaces -> single space, trim)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        
+        cpu_name_lower = cleaned.lower()
+        
+        # Step 4: Vendor-specific handling
+        
+        # Intel: Detect Core i[3|5|7|9] -> keep only the model (e.g., "i7-10700K")
+        intel_core_pattern = r'\b(i[3579]-\d+[a-z]?[a-z]?)\b'
+        match = re.search(intel_core_pattern, cpu_name_lower)
+        if match:
+            return match.group(1)
+        
+        # Intel: Detect Xeon -> keep "Xeon <model> [vX]"
+        if 'xeon' in cpu_name_lower:
+            xeon_pattern = r'\b(xeon\s+[a-z0-9-]+\s*(?:v\d+)?)\b'
+            match = re.search(xeon_pattern, cpu_name_lower)
+            if match:
+                return match.group(1).title()
+            # Fallback: just "Xeon" + next token
+            parts = cleaned.split()
+            for i, part in enumerate(parts):
+                if part.lower() == 'xeon' and i + 1 < len(parts):
+                    return f"Xeon {parts[i + 1]}"
+            return "Xeon"
+        
+        # AMD: Keep Ryzen with tier and model, drop core-count suffixes
+        if 'ryzen' in cpu_name_lower:
+            # Pattern: "Ryzen <tier> <model>" - drop any core-count suffix
+            ryzen_pattern = r'\b(ryzen\s+\d+\s+\d+[a-z]?)\b'
+            match = re.search(ryzen_pattern, cpu_name_lower)
+            if match:
+                return match.group(1).title()
+            # Fallback: try to extract ryzen + next two tokens
+            parts = cleaned.split()
+            for i, part in enumerate(parts):
+                if part.lower() == 'ryzen' and i + 2 < len(parts):
+                    # Skip core-count suffix if present
+                    result_parts = [parts[i], parts[i + 1], parts[i + 2]]
+                    # Remove any part that looks like "12-Core" or similar
+                    result_parts = [p for p in result_parts if not re.match(r'\d+-core', p.lower())]
+                    return ' '.join(result_parts).title()
+        
+        # Apple: Prefer "Apple M1/M2/M3..."
+        if 'apple' in cpu_name_lower or 'm1' in cpu_name_lower or 'm2' in cpu_name_lower:
+            apple_pattern = r'\b(m[123])\b'
+            match = re.search(apple_pattern, cpu_name_lower)
+            if match:
+                return f"Apple {match.group(1).upper()}"
+            if 'apple' in cpu_name_lower:
+                parts = cleaned.split()
+                for i, part in enumerate(parts):
+                    if part.lower() == 'apple' and i + 1 < len(parts):
+                        return f"Apple {parts[i + 1]}"
+        
+        # Fallback: Return cleaned version (removed trademarks, frequency, normalized whitespace)
+        return cleaned
+    
     def get_frequencies(self) -> List[float]:
         """
         Get current clock speeds for each logical core.
@@ -175,20 +257,78 @@ class CPUCollector(BaseCollector):
         
         return []
     
+    def get_current_frequency_string(self) -> Optional[str]:
+        """
+        Get current CPU frequency as a formatted string.
+        
+        Uses per-core frequencies and returns the maximum frequency to better
+        reflect the current CPU state (cores can run at different frequencies).
+        
+        Returns:
+            Formatted frequency string:
+            - If below 1GHz: "800MHz" (no decimal)
+            - If 1GHz or above: "1.2GHz", "3.4GHz" etc. (one decimal place)
+            Returns None if frequency is not available.
+        """
+        try:
+            # Get per-core frequencies (these update live)
+            freq_info = psutil.cpu_freq(percpu=True)
+            if freq_info:
+                # Get the maximum frequency among all cores (most representative of current state)
+                freq_values = [freq.current for freq in freq_info if freq is not None and freq.current is not None]
+                if freq_values:
+                    freq_mhz = max(freq_values)
+                else:
+                    return None
+            else:
+                # Fallback to overall frequency if per-core is not available
+                overall_freq = psutil.cpu_freq()
+                if overall_freq and overall_freq.current is not None:
+                    freq_mhz = overall_freq.current
+                else:
+                    return None
+            
+            # Convert to GHz
+            freq_ghz = freq_mhz / 1000.0
+            
+            # Format based on value
+            if freq_ghz < 1.0:
+                # Below 1GHz: show as MHz with no decimal
+                return f"{int(round(freq_mhz))}MHz"
+            else:
+                # 1GHz or above: show as GHz with one decimal place
+                return f"{freq_ghz:.1f}GHz"
+        except (AttributeError, RuntimeError, OSError):
+            pass
+        
+        return None
+    
     def get_usage(self) -> Tuple[float, List[float]]:
         """
         Get CPU usage percentages.
         
         Returns:
             Tuple of (overall_usage, per_core_usage):
-            - overall_usage: Overall CPU usage percentage (0-100)
-            - per_core_usage: List of per-core CPU usage percentages
+            - overall_usage: Overall CPU usage percentage (0-100, rounded to integer)
+            - per_core_usage: List of per-core CPU usage percentages (rounded to integers)
         """
-        # Get overall CPU usage (0.1 second interval for accuracy)
-        overall_usage = psutil.cpu_percent(interval=0.1)
-        
-        # Get per-core CPU usage
+        # Get per-core CPU usage (0.1 second interval for accuracy)
+        # This call blocks for 0.1 seconds and returns a list of per-core percentages
         per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
+        
+        # Round per-core usage to integers
+        per_core_usage = [round(usage) for usage in per_core_usage]
+        
+        # Calculate overall usage as the average of all cores
+        # This ensures consistency - overall and per-core are from the same measurement period
+        if per_core_usage:
+            overall_usage = sum(per_core_usage) / len(per_core_usage)
+        else:
+            # Fallback: if per_core_usage is empty, get overall separately
+            overall_usage = psutil.cpu_percent(interval=0.1)
+        
+        # Round overall usage to integer
+        overall_usage = round(overall_usage)
         
         return (overall_usage, per_core_usage)
     
@@ -207,6 +347,37 @@ class CPUCollector(BaseCollector):
             # Windows doesn't support load average
             return None
     
+    def get_uptime_string(self) -> Optional[str]:
+        """
+        Get system uptime as a formatted string.
+        
+        Returns:
+            Formatted uptime string (e.g., "uptime 2d 5h 30m 15s", "uptime 3h 15m 30s", "uptime 45m 30s"),
+            or None if not available.
+        """
+        try:
+            import time
+            boot_time = psutil.boot_time()
+            uptime_seconds = time.time() - boot_time
+            
+            days = int(uptime_seconds // 86400)
+            hours = int((uptime_seconds % 86400) // 3600)
+            minutes = int((uptime_seconds % 3600) // 60)
+            seconds = int(uptime_seconds % 60)
+            
+            parts = []
+            if days > 0:
+                parts.append(f"{days}d")
+            if hours > 0:
+                parts.append(f"{hours}h")
+            if minutes > 0:
+                parts.append(f"{minutes}m")
+            parts.append(f"{seconds}s")
+            
+            return "uptime " + " ".join(parts)
+        except Exception:
+            return None
+    
     def get_temperature(self) -> Optional[Dict[str, Any]]:
         """
         Get CPU temperature information.
@@ -214,7 +385,7 @@ class CPUCollector(BaseCollector):
         Returns:
             Dictionary containing temperature data:
             - 'current': Current temperature in Celsius (average if multiple sensors)
-            - 'per_core': List of per-core temperatures (if available)
+            - 'per_core': List of per-core temperatures (if available), aligned with core indices
             - 'sensors': Dictionary of sensor names and their temperatures
             Returns None if temperature sensors are not available.
         """
@@ -223,8 +394,10 @@ class CPUCollector(BaseCollector):
             if not sensors:
                 return None
             
-            cpu_temps = []
+            # Initialize per-core temperature list (one entry per logical core)
+            per_core_temps = [None] * self.cpu_count_logical
             sensor_data = {}
+            all_temps = []
             
             # Look for CPU-related temperature sensors
             # Common sensor names: 'coretemp', 'k10temp', 'cpu_thermal', etc.
@@ -232,28 +405,83 @@ class CPUCollector(BaseCollector):
                 if any(keyword in sensor_name.lower() for keyword in ['cpu', 'core', 'package']):
                     for entry in entries:
                         if entry.current is not None:
-                            cpu_temps.append(entry.current)
-                            sensor_data[entry.label or sensor_name] = entry.current
+                            all_temps.append(entry.current)
+                            label = entry.label or sensor_name
+                            sensor_data[label] = entry.current
+                            
+                            # Try to extract core number from label (e.g., "Core 0", "cpu_core_1", "Tctl")
+                            # Common patterns: "Core 0", "Core 1", "cpu_core_0", "Package id 0", etc.
+                            if entry.label:
+                                label_lower = entry.label.lower()
+                                # Try to find a number in the label
+                                # Look for patterns like "core 0", "core0", "cpu 1", etc.
+                                core_match = re.search(r'(?:core|cpu)[\s_]*(\d+)', label_lower)
+                                if core_match:
+                                    try:
+                                        physical_core_idx = int(core_match.group(1))
+                                        # Map physical core temperature to logical cores
+                                        # With hyperthreading, each physical core has multiple logical cores
+                                        # Physical core 0 -> logical cores 0 and (physical_count)
+                                        # Physical core 1 -> logical cores 1 and (physical_count + 1)
+                                        # etc.
+                                        if physical_core_idx < self.cpu_count_physical:
+                                            # First logical core of this physical core
+                                            logical_idx1 = physical_core_idx
+                                            if logical_idx1 < self.cpu_count_logical:
+                                                per_core_temps[logical_idx1] = entry.current
+                                            
+                                            # Second logical core (if hyperthreading exists)
+                                            logical_idx2 = physical_core_idx + self.cpu_count_physical
+                                            if logical_idx2 < self.cpu_count_logical:
+                                                per_core_temps[logical_idx2] = entry.current
+                                    except (ValueError, IndexError):
+                                        pass
+                                # Also check for package temperature (usually core 0 or average)
+                                elif 'package' in label_lower or 'tdie' in label_lower or 'tctl' in label_lower:
+                                    # Package/Tdie/Tctl usually represents overall CPU temp
+                                    # Use as fallback for cores without specific temperature
+                                    # Don't overwrite existing per-core temps
+                                    for idx in range(self.cpu_count_logical):
+                                        if per_core_temps[idx] is None:
+                                            per_core_temps[idx] = entry.current
             
-            if not cpu_temps:
-                # Try to find any temperature sensor
+            if not all_temps:
+                # Try to find any temperature sensor as fallback
                 for sensor_name, entries in sensors.items():
                     for entry in entries:
                         if entry.current is not None:
-                            cpu_temps.append(entry.current)
-                            sensor_data[entry.label or sensor_name] = entry.current
+                            all_temps.append(entry.current)
+                            label = entry.label or sensor_name
+                            sensor_data[label] = entry.current
                             break
-                    if cpu_temps:
+                    if all_temps:
                         break
             
-            if cpu_temps:
-                avg_temp = sum(cpu_temps) / len(cpu_temps)
+            if all_temps:
+                avg_temp = sum(all_temps) / len(all_temps)
+                
+                # If we have per-core temperatures, filter out None values and check if we have enough
+                per_core_valid = [t for t in per_core_temps if t is not None]
+                
+                # If we have per-core temperatures, use them (even if some are None)
+                # Fill any remaining None values with the average of available temps
+                if len(per_core_valid) > 0:
+                    avg_available = sum(per_core_valid) / len(per_core_valid)
+                    # Fill any None values with the average
+                    per_core_result = [t if t is not None else avg_available for t in per_core_temps]
+                else:
+                    # No per-core data at all
+                    per_core_result = None
+                
                 return {
                     'current': avg_temp,
-                    'per_core': cpu_temps if len(cpu_temps) > 1 else None,
+                    'per_core': per_core_result,
                     'sensors': sensor_data,
                 }
-        except (AttributeError, RuntimeError, OSError):
+        except (AttributeError, RuntimeError, OSError, Exception) as e:
+            # Add debug logging if needed
+            import sys
+            print(f"Temperature collection error: {e}", file=sys.stderr)
             pass
         
         return None
@@ -423,7 +651,8 @@ class CPUCollector(BaseCollector):
         
         Returns:
             Dictionary containing all CPU metrics:
-            - 'name': CPU name/model
+            - 'name': CPU name/model (full name)
+            - 'name_simple': Simplified CPU name (e.g., "i7-8700k")
             - 'overall': Overall CPU usage percentage (0-100)
             - 'per_core': List of per-core CPU usage percentages
             - 'frequencies': List of per-core frequencies in MHz
@@ -438,15 +667,20 @@ class CPUCollector(BaseCollector):
         load_avg = self.get_load_average()
         temperature = self.get_temperature()
         power = self.get_power()
+        uptime = self.get_uptime_string()
+        current_freq_string = self.get_current_frequency_string()
         
         return {
             'name': self.get_cpu_name(),
+            'name_simple': self.get_cpu_name_simple(),
             'overall': overall_usage,
             'per_core': per_core_usage,
             'frequencies': frequencies,
+            'current_frequency': current_freq_string,
             'load_average': load_avg,
             'temperature': temperature,
             'power': power,
+            'uptime': uptime,
             'count_logical': self.cpu_count_logical,
             'count_physical': self.cpu_count_physical,
         }
