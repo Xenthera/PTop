@@ -14,6 +14,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from abc import ABC, abstractmethod
 from .history_graph import HistoryGraph
 from .progress_bar import draw_status_bar, draw_bar_gradient
+from .inline import compose_inline, compose_inline_width, InlineText, InlineBar, InlineGraph, InlineSpacer
 
 
 # ============================================================================
@@ -32,31 +33,8 @@ ELLIPSIS_LENGTH = 3  # Length of "..." truncation indicator
 # Utility Functions
 # ============================================================================
 
-"""
-Remove ANSI escape sequences from text.
-
-Args:
-    text: Text that may contain ANSI codes
-
-Returns:
-    Text with ANSI codes removed
-"""
-def strip_ansi(text: str) -> str:
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    return ansi_escape.sub('', text)
-
-
-"""
-Get the visible length of text (excluding ANSI codes).
-
-Args:
-    text: Text that may contain ANSI codes
-
-Returns:
-    Visible character count
-"""
-def visible_length(text: str) -> int:
-    return len(strip_ansi(text))
+# Import utility functions
+from .utils import strip_ansi, visible_length
 
 
 # ============================================================================
@@ -195,6 +173,43 @@ class Panel:
             line = result
         
         self.content_lines.append(line)
+    
+    """
+    Add an inline-composed line to panel content.
+    
+    Composes multiple inline elements (text, bars, graphs) into a single line.
+    Automatically sizes resizable elements (bars, graphs) to fit panel width.
+    Text elements get priority and use their natural width.
+    Remaining space is divided evenly among resizable components.
+    
+    Args:
+        *elements: Variable number of inline elements (InlineText, InlineBar, InlineGraph, InlineSpacer, or strings)
+        separator: Optional separator string between elements (default: single space)
+        renderer: Optional ANSIRendererBase instance (needed for resizable graphs)
+    """
+    def add_inline(self, *elements, separator: str = " ", renderer=None) -> None:
+        # Set renderer for resizable graphs if provided (before composition)
+        from .inline import InlineGraph, InlineBar
+        if renderer:
+            for elem in elements:
+                if isinstance(elem, InlineGraph) and elem._is_resizable:
+                    elem.set_renderer(renderer)
+                elif isinstance(elem, InlineBar) and elem._is_resizable:
+                    elem.renderer = renderer
+        
+        # Use panel width minus borders for available width
+        available_width = self.width - 2
+        line = compose_inline_width(available_width, *elements, separator=separator)
+        
+        # Re-render all resizable elements after composition to ensure they're updated
+        if renderer:
+            for elem in elements:
+                if isinstance(elem, InlineGraph) and elem._is_resizable:
+                    elem._render()
+                elif isinstance(elem, InlineBar) and elem._is_resizable:
+                    elem._render()
+        
+        self.add_line(line)
     
     """
     Check if panel content has changed since last render.
@@ -686,12 +701,13 @@ class ANSIRendererBase(BaseRenderer):
         width: Width of the graph in characters
         min_value: Minimum value for scaling (default: 0.0)
         max_value: Maximum value for scaling (default: 100.0)
+        use_braille: If True, use braille characters; if False, use fallback blocks (default: True)
     
     Returns:
         HistoryGraph instance
     """
-    def create_history_graph(self, width: int, min_value: float = 0.0, max_value: float = 100.0) -> HistoryGraph:
-        return HistoryGraph(width, min_value, max_value)
+    def create_history_graph(self, width: int, min_value: float = 0.0, max_value: float = 100.0, use_braille: bool = True) -> HistoryGraph:
+        return HistoryGraph(width, min_value, max_value, use_braille=use_braille)
     
     """
     Add a layout to be managed by the renderer.

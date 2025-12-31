@@ -79,6 +79,9 @@ def ansi_to_rgb(ansi_code: str) -> Tuple[int, int, int]:
         ANSIColors.BRIGHT_YELLOW: (255, 240, 100),  # Saturated yellow
         ANSIColors.BRIGHT_RED: (255, 100, 100),     # Saturated red
         ANSIColors.BRIGHT_BLACK: (64, 64, 64),     # Gray
+        ANSIColors.BRIGHT_BLUE: (100, 150, 255),   # Bright blue
+        ANSIColors.BRIGHT_MAGENTA: (255, 100, 255), # Bright magenta/purple
+        ANSIColors.BRIGHT_WHITE: (255, 255, 255),  # White
         ANSIColors.GREEN: (0, 200, 0),
         ANSIColors.YELLOW: (200, 200, 0),
         ANSIColors.RED: (200, 0, 0),

@@ -19,6 +19,9 @@ if parent_dir not in sys.path:
 
 from ptop.ui.ansi_renderer import ANSIRendererBase, ANSIColors, HLayout, VLayout, BaseLayout
 from ptop.ui.history_graph import HistoryGraph
+from ptop.ui.inline import InlineText, InlineBar, InlineGraph
+from ptop.ui.progress_bar import ProgressBar
+from ptop.ui.colors import rgb_to_ansitruecolor
 
 
 class MockCPUData:
@@ -127,6 +130,11 @@ def main():
         usage_graph = renderer.create_history_graph(30, min_value=0.0, max_value=100.0)
         temp_graph = renderer.create_history_graph(30, min_value=30.0, max_value=90.0)
         
+        # Create history graphs for each core (reused across frames)
+        core_graphs = []
+        for i in range(len(mock_data.per_core)):
+            core_graphs.append(renderer.create_history_graph(10, min_value=0.0, max_value=100.0))
+        
         # TEST: Nested Layouts
         # Create a main horizontal layout with 2 vertical layouts inside
         # This demonstrates VLayout inside HLayout
@@ -172,10 +180,6 @@ def main():
         frame_count = 0
         last_terminal_size = renderer.get_terminal_size()
         
-        # Sine wave parameters for testing
-        sine_time = 0.0
-        sine_speed = 0.05  # Controls how fast the sine wave progresses
-        
         while running:
             frame_count += 1
             
@@ -202,58 +206,80 @@ def main():
             # Render header
             renderer.render_header(f"PTop - ANSI Renderer Test (Frame: {frame_count})")
             
+            # Update history graphs with actual mock data
+            usage_graph.add_value(mock_data.overall_usage)
+            temp_graph.add_value(mock_data.temperature)
+            
             # Panel 1: CPU Usage - Example with labels
             # Clear labels and set up new ones each frame (to show dynamic updates)
             panel1.clear_labels()
             panel1.add_left_label('Usage')  # Additional left label after title
-            panel1.add_right_label(f"{mock_data.overall_usage:.1f}%")  # Right label with value
+            panel1.add_right_label(f"{mock_data.overall_usage:.1f}%")  # Right label with value (aligned with bar/graph)
             panel1.add_right_label('Active')  # Another right label
             
-            # Generate sine wave values for history graphs (for testing)
-            # Sine wave goes from min to max smoothly
-            # Usage: 0-100% (full range)
-            usage_sine = 50.0 + 50.0 * math.sin(sine_time)  # Range: 0-100
-            # Temperature: 30-90°C (full range)
-            temp_sine = 60.0 + 30.0 * math.sin(sine_time)  # Range: 30-90
-            
-            # Update history graphs with sine wave values
-            usage_graph.add_value(usage_sine)
-            temp_graph.add_value(temp_sine)
-            
-            # Increment sine wave time
-            sine_time += sine_speed
-            if sine_time >= 2 * math.pi:
-                sine_time -= 2 * math.pi  # Keep in [0, 2π] range
-            
             panel1.clear()
-            panel1.add_line(ANSIColors.BOLD + "Overall Usage:" + ANSIColors.RESET)
-            # Use the max value color from the history graph to colorize the percentage
-            # This ensures the percentage perfectly matches the RGB of the max graph value
+            # Example: Complete inline composition - Text + Percentage + Bar + Graph all on one line
+            # Using resizable bars and graphs that automatically size to fit panel width
+            # All use the same value: mock_data.overall_usage
             max_color = usage_graph.get_max_value_color(renderer)
-            panel1.add_line(f"  {max_color}{mock_data.overall_usage:5.1f}%{ANSIColors.RESET}")
-            bar1 = renderer.draw_status_bar(mock_data.overall_usage, 32)
-            panel1.add_line("  " + bar1)
-            panel1.add_line("")
-            panel1.add_line(ANSIColors.BOLD + "History:" + ANSIColors.RESET)
-            graph_str = usage_graph.get_graph_string(renderer)
-            panel1.add_line("  " + graph_str)
+            
+            usage_bar = ProgressBar(mock_data.overall_usage, truecolor_support=renderer._truecolor_support)
+            panel1.add_inline(
+                InlineText(ANSIColors.BOLD + "Usage:" + ANSIColors.RESET),
+                InlineText(f"{max_color}{mock_data.overall_usage:5.1f}%{ANSIColors.RESET}"),
+                InlineBar(usage_bar),
+                InlineGraph(usage_graph, renderer=renderer, max_size=25),
+                renderer=renderer
+            )
             panel1.add_line("")
             panel1.add_line(ANSIColors.BOLD + "Load Average:" + ANSIColors.RESET)
             panel1.add_line(f"  1m: {ANSIColors.YELLOW}{mock_data.load_avg[0]:.2f}{ANSIColors.RESET}")
             panel1.add_line(f"  5m: {ANSIColors.YELLOW}{mock_data.load_avg[1]:.2f}{ANSIColors.RESET}")
             panel1.add_line(f"  15m: {ANSIColors.YELLOW}{mock_data.load_avg[2]:.2f}{ANSIColors.RESET}")
             
-            # Panel 2: CPU Cores - Example with multiple left labels
+            # Panel 2: CPU Cores - Example with inline composition (text + bar + graph)
             panel2.clear_labels()
             panel2.add_left_label(f"{len(mock_data.per_core)} Cores")  # Additional left label
             panel2.add_right_label('Per-Core')  # Right label
             
             panel2.clear()
-            panel2.add_line(ANSIColors.BOLD + "Per Core Usage:" + ANSIColors.RESET)
+            # Header using inline
+            panel2.add_inline(
+                InlineText(ANSIColors.BOLD + "Per Core Usage:" + ANSIColors.RESET),
+                renderer=renderer
+            )
+            panel2.add_line("")
+            
             for i, core_usage in enumerate(mock_data.per_core[:6]):  # Show first 6 cores
                 core_color = get_usage_color(core_usage)
-                bar = renderer.draw_status_bar(core_usage, 20)
-                panel2.add_line(f"  Core {i}: {core_color}{core_usage:5.1f}%{ANSIColors.RESET} {bar}")
+                # Reuse the graph for this core (add current value to build history)
+                core_graphs[i].add_value(core_usage)
+                
+                # Use different gradient for cores 2, 3, 4 (blue -> purple -> white)
+                # Cores 0, 1, 5 use default green -> yellow -> red
+                if i in [2, 3, 4]:
+                    # Blue -> Purple -> White gradient
+                    # Set colors on graph (using list format)
+                    core_graphs[i].colors = [ANSIColors.BRIGHT_BLUE, ANSIColors.BRIGHT_MAGENTA, ANSIColors.BRIGHT_WHITE]
+                    # Create progress bar with custom colors (list format)
+                    core_bar = ProgressBar(
+                        core_usage,
+                        colors=[ANSIColors.BRIGHT_BLUE, ANSIColors.BRIGHT_MAGENTA, ANSIColors.BRIGHT_WHITE],
+                        truecolor_support=renderer._truecolor_support
+                    )
+                else:
+                    # Default green -> yellow -> red gradient
+                    core_bar = ProgressBar(core_usage, truecolor_support=renderer._truecolor_support)
+                
+                # Use inline composition with resizable bar and graph
+                # Bar has max_size, graph fills remaining space
+                panel2.add_inline(
+                    InlineText(f"  Core {i}:"),
+                    InlineText(f"{core_color}{core_usage:5.1f}%{ANSIColors.RESET}"),
+                    InlineBar(core_bar, max_size=12),
+                    InlineGraph(core_graphs[i], renderer=renderer),
+                    renderer=renderer
+                )
             
             # Panel 3: System Info - Example with temperature and power in labels
             panel3.clear_labels()
@@ -263,13 +289,20 @@ def main():
             panel3.add_right_label(f"{mock_data.power:.1f}W")  # Another right label
             
             panel3.clear()
-            panel3.add_line(ANSIColors.BOLD + "Temperature:" + ANSIColors.RESET)
-            temp_color = get_temp_color(temp_sine)
-            panel3.add_line(f"  CPU: {temp_color}{temp_sine:.1f}°C{ANSIColors.RESET}")
-            panel3.add_line("")
-            panel3.add_line(ANSIColors.BOLD + "History:" + ANSIColors.RESET)
-            temp_graph_str = temp_graph.get_graph_string(renderer)
-            panel3.add_line("  " + temp_graph_str)
+            # Example: Inline composition with text + value + bar + graph all on one line
+            # Using resizable bar and graph that automatically size to fit panel width
+            # All use the same value: mock_data.temperature (scaled to 0-100% for bar)
+            temp_color = get_temp_color(mock_data.temperature)
+            temp_percent = (mock_data.temperature - 30) / 60 * 100  # Scale 30-90°C to 0-100%
+            
+            temp_bar = ProgressBar(temp_percent, truecolor_support=renderer._truecolor_support)
+            panel3.add_inline(
+                InlineText(ANSIColors.BOLD + "Temperature:" + ANSIColors.RESET),
+                InlineText(f"{temp_color}{mock_data.temperature:.1f}°C{ANSIColors.RESET}"),
+                InlineBar(temp_bar, max_size=10),
+                InlineGraph(temp_graph, renderer=renderer),
+                renderer=renderer
+            )
             panel3.add_line("")
             panel3.add_line(ANSIColors.BOLD + "Power:" + ANSIColors.RESET)
             panel3.add_line(f"  {ANSIColors.BRIGHT_MAGENTA}{mock_data.power:.2f} W{ANSIColors.RESET}")
@@ -322,26 +355,120 @@ def main():
                     bar = renderer.draw_status_bar(val, bar_width)
                     panel.add_line(f"  {val:3d}%: {bar}")
             
-            # Panel 5, 6, 7: Static gradient bars (3 identical panels in a row)
-            # Panel 5: Example with labels showing test info
+            # Panel 5, 6, 7: Same setup as panel 1 (Usage + Percentage + Bar + History Graph)
+            # Create history graphs for panels 5, 6, 7 (reused across frames)
+            if not hasattr(renderer, '_panel5_graph'):
+                renderer._panel5_graph = renderer.create_history_graph(30, min_value=0.0, max_value=100.0)
+                renderer._panel6_graph = renderer.create_history_graph(30, min_value=0.0, max_value=100.0)
+                renderer._panel7_graph = renderer.create_history_graph(30, min_value=0.0, max_value=100.0)
+            
+            # Update history graphs with actual mock data (same as panel 1)
+            renderer._panel5_graph.add_value(mock_data.overall_usage)
+            renderer._panel6_graph.add_value(mock_data.overall_usage)
+            renderer._panel7_graph.add_value(mock_data.overall_usage)
+            
+            # Panel 5: Same setup as panel 1
             panel5.clear_labels()
-            panel5.add_left_label('Test')
-            panel5.add_right_label('Static')
-            panel5.add_right_label('Gradient')
-            populate_gradient_panel(panel5)
+            panel5.add_left_label('Usage')
+            panel5.add_right_label(f"{mock_data.overall_usage:.1f}%")
+            panel5.add_right_label('Panel 5')
             
-            # Panel 6: Example with only right labels
+            panel5.clear()
+            max_color_p5 = renderer._panel5_graph.get_max_value_color(renderer)
+            
+            panel5_bar = ProgressBar(mock_data.overall_usage, truecolor_support=renderer._truecolor_support)
+            panel5.add_inline(
+                InlineText(ANSIColors.BOLD + "Usage:" + ANSIColors.RESET),
+                InlineText(f"{max_color_p5}{mock_data.overall_usage:5.1f}%{ANSIColors.RESET}"),
+                InlineBar(panel5_bar),
+                InlineGraph(renderer._panel5_graph, renderer=renderer, max_size=25),
+                renderer=renderer
+            )
+            panel5.add_line("")
+            panel5.add_line(ANSIColors.BOLD + "Load Average:" + ANSIColors.RESET)
+            panel5.add_line(f"  1m: {ANSIColors.YELLOW}{mock_data.load_avg[0]:.2f}{ANSIColors.RESET}")
+            panel5.add_line(f"  5m: {ANSIColors.YELLOW}{mock_data.load_avg[1]:.2f}{ANSIColors.RESET}")
+            panel5.add_line(f"  15m: {ANSIColors.YELLOW}{mock_data.load_avg[2]:.2f}{ANSIColors.RESET}")
+            
+            # Panel 6: ROYGBV (rainbow) gradient
             panel6.clear_labels()
-            panel6.add_right_label('RGB')
-            panel6.add_right_label('Truecolor')
-            populate_gradient_panel(panel6)
+            panel6.add_left_label('Usage')
+            panel6.add_right_label(f"{mock_data.overall_usage:.1f}%")
+            panel6.add_right_label('Panel 6')
             
-            # Panel 7: Example with multiple left labels
+            panel6.clear()
+            max_color_p6 = renderer._panel6_graph.get_max_value_color(renderer)
+            
+            # ROYGBV rainbow gradient: Red -> Orange -> Yellow -> Green -> Blue -> Violet
+            panel6_bar = ProgressBar(
+                mock_data.overall_usage,
+                colors=[
+                    (255, 0, 0),        # Red
+                    (255, 165, 0),      # Orange
+                    (255, 255, 0),      # Yellow
+                    (0, 255, 0),        # Green
+                    (0, 0, 255),        # Blue
+                    (148, 0, 211)       # Violet
+                ],
+                truecolor_support=renderer._truecolor_support
+            )
+            # Also set ROYGBV colors on the graph (using RGB tuples directly)
+            renderer._panel6_graph.colors = [
+                (255, 0, 0),        # Red
+                (255, 165, 0),      # Orange
+                (255, 255, 0),      # Yellow
+                (0, 255, 0),        # Green
+                (0, 0, 255),        # Blue
+                (148, 0, 211)       # Violet
+            ]
+            
+            panel6.add_inline(
+                InlineText(ANSIColors.BOLD + "Usage:" + ANSIColors.RESET),
+                InlineText(f"{max_color_p6}{mock_data.overall_usage:5.1f}%{ANSIColors.RESET}"),
+                InlineBar(panel6_bar),
+                InlineGraph(renderer._panel6_graph, renderer=renderer, max_size=25),
+                renderer=renderer
+            )
+            panel6.add_line("")
+            panel6.add_line(ANSIColors.BOLD + "Load Average:" + ANSIColors.RESET)
+            panel6.add_line(f"  1m: {ANSIColors.YELLOW}{mock_data.load_avg[0]:.2f}{ANSIColors.RESET}")
+            panel6.add_line(f"  5m: {ANSIColors.YELLOW}{mock_data.load_avg[1]:.2f}{ANSIColors.RESET}")
+            panel6.add_line(f"  15m: {ANSIColors.YELLOW}{mock_data.load_avg[2]:.2f}{ANSIColors.RESET}")
+            
+            # Panel 7: Same setup as panel 1, but with custom RGB colors
             panel7.clear_labels()
-            panel7.add_left_label('Demo')
-            panel7.add_left_label('Smooth')
-            panel7.add_right_label('24-bit')
-            populate_gradient_panel(panel7)
+            panel7.add_left_label('Usage')
+            panel7.add_right_label(f"{mock_data.overall_usage:.1f}%")
+            panel7.add_right_label('Panel 7')
+            
+            panel7.clear()
+            max_color_p7 = renderer._panel7_graph.get_max_value_color(renderer)
+            
+            # Custom RGB gradient: cyan -> magenta -> yellow (using list format)
+            panel7_bar = ProgressBar(
+                mock_data.overall_usage,
+                colors=[(0, 255, 255), (255, 0, 255), (255, 255, 0)],  # Cyan -> Magenta -> Yellow
+                truecolor_support=renderer._truecolor_support
+            )
+            # Also set custom colors on the graph (using RGB tuples directly)
+            renderer._panel7_graph.colors = [
+                (0, 255, 255),    # Cyan
+                (255, 0, 255),    # Magenta
+                (255, 255, 0)     # Yellow
+            ]
+            
+            panel7.add_inline(
+                InlineText(ANSIColors.BOLD + "Usage:" + ANSIColors.RESET),
+                InlineText(f"{max_color_p7}{mock_data.overall_usage:5.1f}%{ANSIColors.RESET}"),
+                InlineBar(panel7_bar),
+                InlineGraph(renderer._panel7_graph, renderer=renderer, max_size=25),
+                renderer=renderer
+            )
+            panel7.add_line("")
+            panel7.add_line(ANSIColors.BOLD + "Load Average:" + ANSIColors.RESET)
+            panel7.add_line(f"  1m: {ANSIColors.YELLOW}{mock_data.load_avg[0]:.2f}{ANSIColors.RESET}")
+            panel7.add_line(f"  5m: {ANSIColors.YELLOW}{mock_data.load_avg[1]:.2f}{ANSIColors.RESET}")
+            panel7.add_line(f"  15m: {ANSIColors.YELLOW}{mock_data.load_avg[2]:.2f}{ANSIColors.RESET}")
             
             # Render all panels in order
             renderer.render_panel(panel1)
