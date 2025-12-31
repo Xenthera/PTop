@@ -10,9 +10,10 @@ import os
 import sys
 import shutil
 import re
-import math
 from typing import Dict, Any, List, Tuple, Optional
-from .renderer import BaseRenderer
+from abc import ABC, abstractmethod
+from .history_graph import HistoryGraph
+from .progress_bar import draw_status_bar, draw_bar_gradient
 
 
 # ============================================================================
@@ -59,194 +60,17 @@ def visible_length(text: str) -> int:
 
 
 # ============================================================================
-# Color System
+# Color System (imported from colors module)
 # ============================================================================
 
-class ANSIColors:
-    """ANSI color and style escape sequences."""
-    # Reset
-    RESET = '\033[0m'
-    
-    # Text colors
-    BLACK = '\033[30m'
-    RED = '\033[31m'
-    GREEN = '\033[32m'
-    YELLOW = '\033[33m'
-    BLUE = '\033[34m'
-    MAGENTA = '\033[35m'
-    CYAN = '\033[36m'
-    WHITE = '\033[37m'
-    BRIGHT_BLACK = '\033[90m'
-    BRIGHT_RED = '\033[91m'
-    BRIGHT_GREEN = '\033[92m'
-    BRIGHT_YELLOW = '\033[93m'
-    BRIGHT_BLUE = '\033[94m'
-    BRIGHT_MAGENTA = '\033[95m'
-    BRIGHT_CYAN = '\033[96m'
-    BRIGHT_WHITE = '\033[97m'
-    
-    # Background colors
-    BG_BLACK = '\033[40m'
-    BG_RED = '\033[41m'
-    BG_GREEN = '\033[42m'
-    BG_YELLOW = '\033[43m'
-    BG_BLUE = '\033[44m'
-    BG_MAGENTA = '\033[45m'
-    BG_CYAN = '\033[46m'
-    BG_WHITE = '\033[47m'
-    
-    # Text styles
-    BOLD = '\033[1m'
-    DIM = '\033[2m'
-    UNDERLINE = '\033[4m'
-    
-    """
-    Apply color/style to text.
-    
-    Args:
-        text: Text to colorize
-        color: ANSI color/style code
-    
-    Returns:
-        Colored text string
-    """
-    @staticmethod
-    def colorize(text: str, color: str) -> str:
-        return f"{color}{text}{ANSIColors.RESET}"
-
-
-"""
-Convert ANSI color code to RGB values.
-
-Maps common ANSI colors to their RGB equivalents.
-
-Args:
-    ansi_code: ANSI color code (e.g., ANSIColors.BRIGHT_GREEN)
-
-Returns:
-    Tuple of (R, G, B) values (0-255)
-"""
-def ansi_to_rgb(ansi_code: str) -> Tuple[int, int, int]:
-    # Map ANSI colors to RGB
-    color_map = {
-        ANSIColors.BRIGHT_GREEN: (60, 180, 120),    # Winter green
-        ANSIColors.BRIGHT_YELLOW: (255, 240, 100),  # Saturated yellow
-        ANSIColors.BRIGHT_RED: (255, 100, 100),     # Saturated red
-        ANSIColors.BRIGHT_BLACK: (64, 64, 64),     # Gray
-        ANSIColors.GREEN: (0, 200, 0),
-        ANSIColors.YELLOW: (200, 200, 0),
-        ANSIColors.RED: (200, 0, 0),
-        ANSIColors.BLACK: (0, 0, 0),
-    }
-    
-    return color_map.get(ansi_code, (128, 128, 128))  # Default to gray
-
-
-"""
-Convert RGB values to 256-color ANSI code.
-
-Uses the 256-color palette (xterm-256color) with improved quantization
-for smoother gradients.
-
-Args:
-    r: Red component (0-255)
-    g: Green component (0-255)
-    b: Blue component (0-255)
-
-Returns:
-    ANSI escape sequence for 256-color mode
-"""
-def rgb_to_ansi256(r: int, g: int, b: int) -> str:
-    # Clamp values
-    r = max(0, min(255, r))
-    g = max(0, min(255, g))
-    b = max(0, min(255, b))
-    
-    # Convert to 256-color ANSI code
-    # Formula: 16 + 36*r + 6*g + b (for RGB cube)
-    # Map 0-255 to 0-5 for each component
-    r6 = round(r / 51.0)
-    g6 = round(g / 51.0)
-    b6 = round(b / 51.0)
-    
-    # Clamp to 0-5
-    r6 = max(0, min(5, r6))
-    g6 = max(0, min(5, g6))
-    b6 = max(0, min(5, b6))
-    
-    # Calculate color code (16-231 for RGB cube)
-    color_code = 16 + 36 * r6 + 6 * g6 + b6
-    
-    return f'\033[38;5;{color_code}m'
-
-
-"""
-Convert RGB values to truecolor (24-bit) ANSI code.
-
-Uses truecolor ANSI codes for perfectly smooth gradients.
-Format: \033[38;2;R;G;Bm
-
-Args:
-    r: Red component (0-255)
-    g: Green component (0-255)
-    b: Blue component (0-255)
-
-Returns:
-    ANSI escape sequence for truecolor mode
-"""
-def rgb_to_ansitruecolor(r: int, g: int, b: int) -> str:
-    # Clamp values
-    r = max(0, min(255, r))
-    g = max(0, min(255, g))
-    b = max(0, min(255, b))
-    
-    return f'\033[38;2;{r};{g};{b}m'
-
-
-"""
-Interpolate between two RGB colors with smooth linear interpolation.
-
-Args:
-    rgb1: First RGB color (R, G, B)
-    rgb2: Second RGB color (R, G, B)
-    ratio: Interpolation ratio (0.0 = rgb1, 1.0 = rgb2)
-
-Returns:
-    Interpolated RGB color
-"""
-def interpolate_rgb(rgb1: Tuple[int, int, int], rgb2: Tuple[int, int, int], ratio: float) -> Tuple[int, int, int]:
-    ratio = max(0.0, min(1.0, ratio))
-    r = round(rgb1[0] + (rgb2[0] - rgb1[0]) * ratio)
-    g = round(rgb1[1] + (rgb2[1] - rgb1[1]) * ratio)
-    b = round(rgb1[2] + (rgb2[2] - rgb1[2]) * ratio)
-    # Clamp to valid RGB range
-    r = max(0, min(255, r))
-    g = max(0, min(255, g))
-    b = max(0, min(255, b))
-    return (r, g, b)
-
-
-"""
-Check if terminal supports truecolor (24-bit RGB).
-
-Returns:
-    True if truecolor is supported, False otherwise
-"""
-def _supports_truecolor() -> bool:
-    # Check COLORTERM environment variable (common indicator)
-    colorterm = os.environ.get('COLORTERM', '').lower()
-    if 'truecolor' in colorterm or '24bit' in colorterm:
-        return True
-    
-    # Check TERM variable for common truecolor terminals
-    term = os.environ.get('TERM', '').lower()
-    truecolor_terms = ['xterm-256color', 'screen-256color', 'tmux-256color', 
-                       'rxvt-unicode-256color', 'alacritty', 'kitty', 'wezterm']
-    if any(t in term for t in truecolor_terms):
-        return True
-    
-    # Default to truecolor for modern terminals (most support it)
-    return True
+from .colors import (
+    ANSIColors,
+    ansi_to_rgb,
+    rgb_to_ansi256,
+    rgb_to_ansitruecolor,
+    interpolate_rgb,
+    _supports_truecolor,
+)
 
 
 # ============================================================================
@@ -714,257 +538,45 @@ class VLayout(BaseLayout):
             current_row += item_height + self.spacing
 
 
+
+
 # ============================================================================
-# History Graph
+# Base Renderer Interface
 # ============================================================================
 
-class HistoryGraph:
+class BaseRenderer(ABC):
     """
-    Single-line scrolling history graph using Unicode braille characters (btop-style).
+    Abstract base class for all renderers.
     
-    Maintains a buffer of values and displays them as a scrolling graph
-    that moves left as new data arrives. Uses braille characters (U+2800-U+28FF)
-    to represent fill levels in a 2×4 dot grid per character cell.
-    
-    Braille dot layout (Unicode standard):
-    (1) (4)
-    (2) (5)
-    (3) (6)
-    (7) (8)
-    
-    btop fill order (bottom-up, left column first, then right):
-    Level 1 → dot 7
-    Level 2 → dots 7, 3
-    Level 3 → dots 7, 3, 2
-    Level 4 → dots 7, 3, 2, 1
-    Level 5 → dots 7, 3, 2, 1, 8
-    Level 6 → dots 7, 3, 2, 1, 8, 6
-    Level 7 → dots 7, 3, 2, 1, 8, 6, 5
-    Level 8 → dots 7, 3, 2, 1, 8, 6, 5, 4
+    This defines the interface that all renderers must implement,
+    allowing the UI layer to be swapped without changing other modules.
     """
     
-    # Braille base codepoint (U+2800)
-    BRAILLE_BASE = 0x2800
+    @abstractmethod
+    def setup(self) -> None:
+        """Initialize the renderer (e.g., set up terminal)."""
+        pass
     
-    # Exact btop fill order mapping
-    # Each dot corresponds to bit = 1 << (dot_number - 1)
-    # Fill sequence: 7, 3, 2, 1, 8, 6, 5, 4
-    FILL_DOT_SEQUENCE = [7, 3, 2, 1, 8, 6, 5, 4]
-    
-    # Mapping from fill level (0-8) to braille bitmask (generated programmatically)
-    # This produces: [0x00, 0x40, 0x44, 0x46, 0x47, 0xC7, 0xE7, 0xF7, 0xFF]
-    # Which renders as: ⠀⡀⡄⡆⡇⣇⣧⣷⣿
-    _FILL_DOT_SEQUENCE = [7, 3, 2, 1, 8, 6, 5, 4]
-    _bitmasks_temp = [0x00]  # Level 0: no dots
-    _current_mask_temp = 0x00
-    for _dot_num in _FILL_DOT_SEQUENCE:
-        _bit = 1 << (_dot_num - 1)  # bit = 1 << (dot_number - 1)
-        _current_mask_temp |= _bit
-        _bitmasks_temp.append(_current_mask_temp)
-    FILL_LEVEL_TO_BITMASK = _bitmasks_temp
-    del _FILL_DOT_SEQUENCE, _bitmasks_temp, _current_mask_temp, _dot_num, _bit
-    
-    # Fallback block characters for terminals without braille support
-    FALLBACK_BLOCKS = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
-    
-    """
-    Initialize a history graph.
-    
-    Args:
-        width: Width of the graph in characters
-        min_value: Minimum value for scaling (default: 0.0)
-        max_value: Maximum value for scaling (default: 100.0)
-        use_braille: If True, use braille characters; if False, use fallback blocks
-    """
-    def __init__(self, width: int, min_value: float = 0.0, max_value: float = 100.0, use_braille: bool = True):
-        self.width = width
-        self.min_value = min_value
-        self.max_value = max_value
-        self.history: List[float] = []
-        self.use_braille = use_braille
-    
-    """
-    Add a new value to the history graph.
-    
-    New values are added to the right, old values scroll left.
-    If buffer is full, oldest value is removed.
-    
-    Args:
-        value: New value to add (will be clamped to min_value-max_value)
-    """
-    def add_value(self, value: float) -> None:
-        value = max(self.min_value, min(self.max_value, value))
-        self.history.append(value)
+    @abstractmethod
+    def render(self, data: Dict[str, Any]) -> None:
+        """
+        Render the collected metrics data.
         
-        # Keep only the last 'width' values (scroll left)
-        if len(self.history) > self.width:
-            self.history.pop(0)
+        Args:
+            data: Dictionary containing metrics from all collectors,
+                  keyed by collector name (e.g., {'cpu': {...}})
+        """
+        pass
     
-    """Clear the history buffer."""
+    @abstractmethod
     def clear(self) -> None:
-        self.history = []
+        """Clear the display area."""
+        pass
     
-    """
-    Convert a normalized value [0.0-1.0] to a fill level [0-8] using btop's method.
-    
-    Uses floor (not round) to avoid jitter at boundaries.
-    
-    Args:
-        normalized: Normalized value in range [0.0-1.0]
-    
-    Returns:
-        Fill level in range [0-8]
-    """
-    def _normalized_to_fill_level(self, normalized: float) -> int:
-        fill_level = math.floor(normalized * 8.0 + FLOOR_EPSILON)
-        return max(0, min(8, int(fill_level)))
-    
-    """
-    Convert a fill level [0-8] to a braille or block character.
-    
-    Args:
-        fill_level: Fill level in range [0-8]
-    
-    Returns:
-        Unicode character for the fill level
-    """
-    def _fill_level_to_glyph(self, fill_level: int) -> str:
-        fill_level = max(0, min(8, fill_level))
-        
-        if self.use_braille:
-            bitmask = self.FILL_LEVEL_TO_BITMASK[fill_level]
-            codepoint = self.BRAILLE_BASE + bitmask
-            return chr(codepoint)
-        else:
-            return self.FALLBACK_BLOCKS[fill_level]
-    
-    """
-    Get the ANSI color code for a specific value using the exact same
-    RGB interpolation as the graph rendering.
-    
-    Args:
-        value: The value to get color for (in original units, not normalized)
-        renderer: ANSIRendererBase instance for color conversion
-    
-    Returns:
-        ANSI color code for the value
-    """
-    def _get_value_color(self, value: float, renderer: 'ANSIRendererBase') -> str:
-        # Normalize to 0-100 for color mapping
-        value_range = self.max_value - self.min_value
-        if value_range == 0:
-            normalized = 50.0
-        else:
-            normalized = ((value - self.min_value) / value_range) * 100.0
-        
-        # Use EXACT same RGB interpolation as graph rendering
-        rgb_low = ansi_to_rgb(ANSIColors.BRIGHT_GREEN)
-        rgb_mid = ansi_to_rgb(ANSIColors.BRIGHT_YELLOW)
-        rgb_high = ansi_to_rgb(ANSIColors.BRIGHT_RED)
-        
-        # Interpolate color
-        if normalized <= 50.0:
-            ratio = normalized / 50.0
-            rgb = interpolate_rgb(rgb_low, rgb_mid, ratio)
-        else:
-            ratio = (normalized - 50.0) / 50.0
-            rgb = interpolate_rgb(rgb_mid, rgb_high, ratio)
-        
-        # Convert to ANSI
-        if renderer._truecolor_support:
-            return rgb_to_ansitruecolor(*rgb)
-        else:
-            return rgb_to_ansi256(*rgb)
-    
-    """
-    Get the graph as a formatted string with colors using braille characters.
-    
-    Args:
-        renderer: ANSIRendererBase instance for color conversion
-    
-    Returns:
-        Formatted string with colored braille characters representing the history
-    """
-    def get_graph_string(self, renderer: 'ANSIRendererBase') -> str:
-        if not self.history:
-            empty_glyph = self._fill_level_to_glyph(0)
-            return empty_glyph * self.width
-        
-        # Normalize values to [0.0-1.0]
-        value_range = self.max_value - self.min_value
-        if value_range == 0:
-            normalized = [0.5] * len(self.history)
-        else:
-            normalized = [((v - self.min_value) / value_range) for v in self.history]
-        
-        graph_parts = []
-        
-        # Pad left if history is shorter than width
-        if len(self.history) < self.width:
-            padding = self.width - len(self.history)
-            empty_glyph = self._fill_level_to_glyph(0)
-            graph_parts.append(empty_glyph * padding)
-        
-        # Add colored braille characters for each value
-        for norm_value in normalized:
-            fill_level = self._normalized_to_fill_level(norm_value)
-            glyph = self._fill_level_to_glyph(fill_level)
-            
-            # Get color based on normalized value
-            value_percent = norm_value * 100.0
-            rgb_low = ansi_to_rgb(ANSIColors.BRIGHT_GREEN)
-            rgb_mid = ansi_to_rgb(ANSIColors.BRIGHT_YELLOW)
-            rgb_high = ansi_to_rgb(ANSIColors.BRIGHT_RED)
-            
-            # Interpolate color (same logic as status bar)
-            if value_percent <= 50.0:
-                ratio = value_percent / 50.0
-                rgb = interpolate_rgb(rgb_low, rgb_mid, ratio)
-            else:
-                ratio = (value_percent - 50.0) / 50.0
-                rgb = interpolate_rgb(rgb_mid, rgb_high, ratio)
-            
-            # Convert to ANSI color
-            if renderer._truecolor_support:
-                color_code = rgb_to_ansitruecolor(*rgb)
-            else:
-                color_code = rgb_to_ansi256(*rgb)
-            
-            graph_parts.append(color_code + glyph)
-        
-        return ''.join(graph_parts) + ANSIColors.RESET
-    
-    """
-    Get the ANSI color code for the maximum value in the history.
-    
-    Args:
-        renderer: ANSIRendererBase instance for color conversion
-    
-    Returns:
-        ANSI color code for the maximum value, or default color if history is empty
-    """
-    def get_max_value_color(self, renderer: 'ANSIRendererBase') -> str:
-        if not self.history:
-            return self._get_value_color(self.min_value, renderer)
-        
-        max_value = max(self.history)
-        return self._get_value_color(max_value, renderer)
-    
-    """
-    Get the ANSI color code for the current (latest) value in the history.
-    
-    Args:
-        renderer: ANSIRendererBase instance for color conversion
-    
-    Returns:
-        ANSI color code for the current value, or default color if history is empty
-    """
-    def get_current_value_color(self, renderer: 'ANSIRendererBase') -> str:
-        if not self.history:
-            return self._get_value_color(self.min_value, renderer)
-        
-        current_value = self.history[-1]
-        return self._get_value_color(current_value, renderer)
+    @abstractmethod
+    def cleanup(self) -> None:
+        """Clean up resources on exit."""
+        pass
 
 
 # ============================================================================
@@ -1129,7 +741,10 @@ class ANSIRendererBase(BaseRenderer):
                  mid_color: str = ANSIColors.BRIGHT_YELLOW,
                  high_color: str = ANSIColors.BRIGHT_RED,
                  empty_color: str = ANSIColors.BRIGHT_BLACK) -> str:
-        return self.draw_bar_gradient(value, width, low_color, mid_color, high_color, empty_color)
+        return draw_bar_gradient(
+            value, width, low_color, mid_color, high_color, empty_color,
+            self._truecolor_support
+        )
     
     """
     Create a status bar with standard gradient colors.
@@ -1145,91 +760,7 @@ class ANSIRendererBase(BaseRenderer):
         Formatted bar string with per-cell RGB gradient
     """
     def draw_status_bar(self, value: float, width: int) -> str:
-        return self.draw_bar_gradient(
-            value, width,
-            ANSIColors.BRIGHT_GREEN,
-            ANSIColors.BRIGHT_YELLOW,
-            ANSIColors.BRIGHT_RED,
-            ANSIColors.BRIGHT_BLACK
-        )
-    
-    """
-    Create a horizontal progress bar with smooth RGB gradient colors.
-    
-    Each filled cell gets its own interpolated RGB color for a smooth gradient
-    from green (0%) -> yellow (50%) -> red (100%).
-    
-    Args:
-        value: Value percentage (0-100)
-        width: Bar width in characters
-        low_color: ANSI color for low values (0-50%) - will be converted to RGB
-        mid_color: ANSI color for mid values (50%) - will be converted to RGB
-        high_color: ANSI color for high values (50-100%) - will be converted to RGB
-        empty_color: ANSI color for unfilled portion (gray)
-    
-    Returns:
-        Formatted bar string with per-cell RGB gradient
-    """
-    def draw_bar_gradient(self, value: float, width: int,
-                          low_color: str = ANSIColors.BRIGHT_GREEN,
-                          mid_color: str = ANSIColors.BRIGHT_YELLOW,
-                          high_color: str = ANSIColors.BRIGHT_RED,
-                          empty_color: str = ANSIColors.BRIGHT_BLACK) -> str:
-        # Clamp value
-        value = max(0, min(100, value))
-        
-        # Calculate filled portion
-        filled = int((value / 100.0) * width)
-        empty = width - filled
-        
-        # Unicode square character (like btop uses)
-        bar_char = '■'
-        
-        # Convert ANSI colors to RGB
-        rgb_low = ansi_to_rgb(low_color)
-        rgb_mid = ansi_to_rgb(mid_color)
-        rgb_high = ansi_to_rgb(high_color)
-        rgb_empty = ansi_to_rgb(empty_color)
-        
-        # Convert empty color to ANSI (use truecolor if available)
-        if self._truecolor_support:
-            empty_ansi = rgb_to_ansitruecolor(*rgb_empty)
-        else:
-            empty_ansi = rgb_to_ansi256(*rgb_empty)
-        
-        # Build bar with per-cell RGB interpolation
-        bar_parts = []
-        
-        for i in range(filled):
-            # Calculate position as percentage (0-100) based on cell position in bar
-            cell_percent = (i / max(1, width - 1)) * 100.0 if width > 1 else 0.0
-            
-            # Clamp to ensure we hit the endpoints
-            if i == 0:
-                cell_percent = 0.0
-            elif i == filled - 1 and filled == width:
-                cell_percent = 100.0
-            
-            # Interpolate RGB based on cell position
-            if cell_percent <= 50.0:
-                ratio = cell_percent / 50.0
-                rgb = interpolate_rgb(rgb_low, rgb_mid, ratio)
-            else:
-                ratio = (cell_percent - 50.0) / 50.0
-                rgb = interpolate_rgb(rgb_mid, rgb_high, ratio)
-            
-            # Convert interpolated RGB to ANSI
-            if self._truecolor_support:
-                color_ansi = rgb_to_ansitruecolor(*rgb)
-            else:
-                color_ansi = rgb_to_ansi256(*rgb)
-            bar_parts.append(color_ansi + bar_char)
-        
-        # Add empty cells with gray color
-        for i in range(empty):
-            bar_parts.append(empty_ansi + bar_char)
-        
-        return ''.join(bar_parts) + ANSIColors.RESET
+        return draw_status_bar(value, width, self._truecolor_support)
     
     """
     Move cursor to specified position.

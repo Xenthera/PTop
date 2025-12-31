@@ -14,8 +14,7 @@ import sys
 from typing import List, Dict, Any
 from ..collectors.base import BaseCollector
 from ..collectors.cpu import CPUCollector
-from ..ui.renderer import TextRenderer, BaseRenderer
-from ..ui.ansi_renderer import ANSIRendererBase
+from ..ui.ansi_renderer import ANSIRendererBase, BaseRenderer
 from ..ui.cpu_panel_controller import CPUPanelController
 
 
@@ -30,13 +29,12 @@ class PTopApp:
     - Handles graceful shutdown
     """
     
-    def __init__(self, update_interval: float = 1.0, use_ansi: bool = False):
+    def __init__(self, update_interval: float = 1.0):
         """
         Initialize the application.
         
         Args:
             update_interval: Time in seconds between updates (default: 1.0)
-            use_ansi: If True, use ANSIRenderer instead of TextRenderer (default: False)
         """
         self.update_interval = update_interval
         self.running = False
@@ -46,15 +44,10 @@ class PTopApp:
         self.collectors: List[BaseCollector] = []
         self._init_collectors()
         
-        # Initialize UI renderer
-        # Can use ANSI renderer for advanced features or text renderer for simple output
-        if use_ansi:
-            self.renderer: BaseRenderer = ANSIRendererBase()
-            # Create CPU panel controller for ANSI renderer
-            self.cpu_controller = CPUPanelController(self.renderer)
-        else:
-            self.renderer: BaseRenderer = TextRenderer()
-            self.cpu_controller = None
+        # Initialize UI renderer (always use ANSI renderer)
+        self.renderer: BaseRenderer = ANSIRendererBase()
+        # Create CPU panel controller
+        self.cpu_controller = CPUPanelController(self.renderer)
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -130,23 +123,18 @@ class PTopApp:
                 # Collect metrics from all collectors
                 metrics = self.collect_metrics()
                 
-                # Render the collected data
-                if isinstance(self.renderer, ANSIRendererBase):
-                    # Use ANSI renderer with controllers
-                    self.renderer.terminal_size = self.renderer.get_terminal_size()
-                    sys.stdout.write('\033[H')  # Move to top
-                    
-                    # Render header
-                    self.renderer.render_header("PTop - System Monitor")
-                    
-                    # Render CPU panel using controller
-                    if 'cpu' in metrics and self.cpu_controller:
-                        self.cpu_controller.render(metrics['cpu'])
-                    
-                    sys.stdout.flush()
-                else:
-                    # Use standard renderer
-                    self.renderer.render(metrics)
+                # Render the collected data using ANSI renderer with controllers
+                self.renderer.terminal_size = self.renderer.get_terminal_size()
+                sys.stdout.write('\033[H')  # Move to top
+                
+                # Render header
+                self.renderer.render_header("PTop - System Monitor")
+                
+                # Render CPU panel using controller
+                if 'cpu' in metrics and self.cpu_controller:
+                    self.cpu_controller.render(metrics['cpu'])
+                
+                sys.stdout.flush()
                 
                 # Wait for next update interval
                 time.sleep(self.update_interval)
