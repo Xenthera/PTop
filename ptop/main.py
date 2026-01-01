@@ -27,13 +27,15 @@ def main():
     Creates and runs the PTopApp instance.
     """
     parser = argparse.ArgumentParser(description='PTop - Terminal system monitor')
-    parser.add_argument('--interval', type=float, default=1.0,
-                       help='Update interval in seconds (default: 1.0)')
+    parser.add_argument('--interval', type=float, default=0.05,
+                       help='Update interval in seconds (default: 0.05)')
+    parser.add_argument('--debug', action='store_true',
+                       help='Use mock collectors with random data instead of real hardware')
     
     args = parser.parse_args()
     
     # Create application instance
-    app = PTopApp(update_interval=0.2)
+    app = PTopApp(update_interval=args.interval, debug=args.debug)
     
     # Run the application
     app.run()

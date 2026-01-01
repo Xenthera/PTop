@@ -1,0 +1,13 @@
+Refactor: Code cleanup, bug fixes, and build system
+
+- Fix resize rendering bug by removing \n after cursor positioning
+- Clean up ansi_renderer.py: remove 569 lines of unused code and verbose docstrings
+- Fix CPU collector: use non-blocking interval=None for update_interval support
+- Fix update_interval parameter: was hardcoded to 0.2, now respects --interval arg
+- Fix macOS CPU name detection: use sysctl for Apple Silicon chips
+- Improve Apple CPU name parsing: support M[N] Pro/Max/Ultra variants (future-proof)
+- Add conditional core temp graphs: only show when per-core data available
+- Add PyInstaller build script and comprehensive .gitignore
+
+Net reduction: ~710 lines removed
+

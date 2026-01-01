@@ -23,7 +23,6 @@ from .inline import compose_inline, compose_inline_width, InlineText, InlineBar,
 
 DEFAULT_TERMINAL_COLS = 80
 DEFAULT_TERMINAL_ROWS = 24
-HEADER_LINES = 2
 FLOOR_EPSILON = 1e-6
 LABEL_SEPARATOR_SPACING = 2  # Horizontal lines between labels
 ELLIPSIS_LENGTH = 3  # Length of "..." truncation indicator
@@ -82,51 +81,25 @@ class Container:
         self.children: List['Container'] = []
         self.parent: Optional['Container'] = None
     
-    """
-    Get the content area of this container.
-    
-    For bordered panels, this is the area inside the borders.
-    For borderless panels and layouts, this is the full bounds.
-    
-    Returns:
-        Tuple of (content_row, content_col, content_width, content_height)
-    """
+    """Get the content area (full bounds by default, overridden by Panel)."""
     def get_content_area(self) -> Tuple[int, int, int, int]:
         # Default implementation: full bounds (overridden by Panel for bordered)
         return (self.row, self.col, self.width, self.height)
     
-    """
-    Add a child container.
-    
-    Args:
-        child: Container to add as child
-    """
+    """Add a child container."""
     def add_child(self, child: 'Container') -> None:
         if child.parent is not None:
             child.parent.remove_child(child)
         self.children.append(child)
         child.parent = self
     
-    """
-    Remove a child container.
-    
-    Args:
-        child: Container to remove
-    """
+    """Remove a child container."""
     def remove_child(self, child: 'Container') -> None:
         if child in self.children:
             self.children.remove(child)
             child.parent = None
     
-    """
-    Set the bounds of this container.
-    
-    Args:
-        row: Top row position (1-based)
-        col: Left column position (1-based)
-        width: Container width
-        height: Container height
-    """
+    """Set the bounds of this container."""
     def set_bounds(self, row: int, col: int, width: int, height: int) -> None:
         self.row = row
         self.col = col
@@ -258,51 +231,22 @@ class Panel(Container):
         self._last_rendered_lines: List[str] = []
         self._last_rendered_dimensions: Optional[Tuple[int, int, int, int]] = None  # (row, col, width, height)
     
-    """
-    Add a left-aligned label to the top border.
-    
-    Labels are packed to the left side of the border.
-    The title (if set) is always the first left label.
-    
-    Args:
-        label: Label text to add (will be formatted with spaces)
-    """
+    """Add a left-aligned label to the top border."""
     def add_left_label(self, label: str) -> None:
         if label:
             self.left_labels.append(label)
     
-    """
-    Add a right-aligned label to the top border.
-    
-    Labels are packed to the right side of the border.
-    
-    Args:
-        label: Label text to add (will be formatted with spaces)
-    """
+    """Add a right-aligned label to the top border."""
     def add_right_label(self, label: str) -> None:
         if label:
             self.right_labels.append(label)
     
-    """
-    Add a left-aligned label to the bottom border.
-    
-    Labels are packed to the left side of the border.
-    
-    Args:
-        label: Label text to add (will be formatted with spaces)
-    """
+    """Add a left-aligned label to the bottom border."""
     def add_bottom_left_label(self, label: str) -> None:
         if label:
             self.bottom_left_labels.append(label)
     
-    """
-    Add a right-aligned label to the bottom border.
-    
-    Labels are packed to the right side of the border.
-    
-    Args:
-        label: Label text to add (will be formatted with spaces)
-    """
+    """Add a right-aligned label to the bottom border."""
     def add_bottom_right_label(self, label: str) -> None:
         if label:
             self.bottom_right_labels.append(label)
@@ -438,46 +382,24 @@ class Panel(Container):
     
     # Border and rendering helper methods
     
-    """
-    Get border characters based on rounded flag.
-    
-    Returns:
-        Tuple of (top_left, top_right, bottom_left, bottom_right, horizontal, vertical)
-    """
+    """Get border characters based on rounded flag."""
     def _get_border_chars(self) -> Tuple[str, str, str, str, str, str]:
         if self.rounded:
             return ('╭', '╮', '╰', '╯', '─', '│')
         else:
             return ('┌', '┐', '└', '┘', '─', '│')
     
-    """
-    Apply border color to text if border_color is set.
-    
-    Args:
-        text: Text to colorize
-    
-    Returns:
-        Text with border color applied (or unchanged if no border_color)
-    """
+    """Apply border color to text if border_color is set."""
     def _apply_border_color(self, text: str) -> str:
         if self.border_color:
             return self.border_color + text + ANSIColors.RESET
         return text
     
-    """
-    Apply border color only to border characters (┐, ┌, ─), not labels.
-    
-    Args:
-        border_with_labels: Border string with labels and separators
-    
-    Returns:
-        Border string with only border characters colored, labels remain uncolored
-    """
+    """Apply border color only to border characters, not labels."""
     def _colorize_border_only(self, border_with_labels: str) -> str:
         if not self.border_color or not border_with_labels:
             return border_with_labels
         
-        """Colorize a matched border character."""
         def colorize_match(match):
             return self._apply_border_color(match.group(0))
         
@@ -485,17 +407,7 @@ class Panel(Container):
         result = re.sub(r'[┐┌┘└]|─+', colorize_match, border_with_labels)
         return result
     
-    """
-    Format labels with separators (┐ label ┌ for top, ┘ label └ for bottom).
-    
-    Args:
-        labels: List of label strings
-        horizontal_char: Horizontal line character for spacing
-        is_bottom: If True, use bottom corner characters (┘ and └), else use top (┐ and ┌)
-    
-    Returns:
-        Formatted label string with separators
-    """
+    """Format labels with separators."""
     def _format_labels(self, labels: List[str], horizontal_char: str, is_bottom: bool = False) -> str:
         if not labels:
             return ""
@@ -519,15 +431,7 @@ class Panel(Container):
         
         return ''.join(formatted)
     
-    """
-    Build top border with labels.
-    
-    Args:
-        available_width: Available width for border (excluding corners)
-    
-    Returns:
-        Formatted top border string
-    """
+    """Build top border with labels."""
     def _build_top_border(self, available_width: int) -> str:
         tl, tr, _, _, h, _ = self._get_border_chars()
         
@@ -573,12 +477,7 @@ class Panel(Container):
         
         return ANSIColors.BOLD + colored_tl + colored_left + colored_middle + colored_right + colored_tr + ANSIColors.RESET
     
-    """
-    Build content area lines with borders.
-    
-    Returns:
-        List of formatted content lines
-    """
+    """Build content area lines with borders."""
     def _build_content_lines(self) -> List[str]:
         _, _, _, _, _, v = self._get_border_chars()
         content_height = self.height - 2  # Account for top and bottom borders
@@ -599,12 +498,7 @@ class Panel(Container):
         
         return lines
     
-    """
-    Build bottom border with labels.
-    
-    Returns:
-        Formatted bottom border string
-    """
+    """Build bottom border with labels."""
     def _build_bottom_border(self) -> str:
         _, _, bl, br, h, _ = self._get_border_chars()
         available_width = self.width - 2  # Account for corner characters
@@ -684,27 +578,40 @@ class Panel(Container):
                 lines.append(padded)
         else:
             # Bordered panel: render with borders
-            # Top border with labels
-            available_width = self.width - 2  # Account for corner characters
-            lines.append(self._build_top_border(available_width))
-            
-            # Content lines - if panel has children but no content, skip rendering
-            # empty content lines that would clear the children area
-            if self.content_lines or not self.children:
-                lines.extend(self._build_content_lines())
+            # Ensure minimum height of 3 (top border, content, bottom border)
+            if self.height < 3:
+                # Panel too small for borders - render as borderless content only
+                for i in range(self.height):
+                    if i < len(self.content_lines):
+                        content = self.content_lines[i]
+                        visible_len = visible_length(content)
+                        padding_needed = max(0, (self.width - visible_len))
+                        padded = content + ' ' * padding_needed
+                    else:
+                        padded = ' ' * self.width
+                    lines.append(padded)
             else:
-                # Panel has children but no content - render border structure only
-                # Children will render in the content area, so we don't want to clear it
-                _, _, _, _, _, v = self._get_border_chars()
-                content_height = self.height - 2
-                for _ in range(content_height):
-                    left_border = self._apply_border_color(v)
-                    right_border = self._apply_border_color(v)
-                    # Render borders only, leave content area empty for children
-                    lines.append(left_border + ' ' * (self.width - 2) + right_border)
-            
-            # Bottom border
-            lines.append(self._build_bottom_border())
+                # Top border with labels
+                available_width = self.width - 2  # Account for corner characters
+                lines.append(self._build_top_border(available_width))
+                
+                # Content lines - if panel has children but no content, skip rendering
+                # empty content lines that would clear the children area
+                if self.content_lines or not self.children:
+                    lines.extend(self._build_content_lines())
+                else:
+                    # Panel has children but no content - render border structure only
+                    # Children will render in the content area, so we don't want to clear it
+                    _, _, _, _, _, v = self._get_border_chars()
+                    content_height = self.height - 2
+                    for _ in range(content_height):
+                        left_border = self._apply_border_color(v)
+                        right_border = self._apply_border_color(v)
+                        # Render borders only, leave content area empty for children
+                        lines.append(left_border + ' ' * (self.width - 2) + right_border)
+                
+                # Bottom border
+                lines.append(self._build_bottom_border())
         
         self._last_rendered_lines = lines
         return lines
@@ -740,64 +647,27 @@ class BaseLayout(Container):
         self.margin = margin
         self.spacing = spacing
     
-    """
-    Get the content area of this layout.
-    
-    Content area accounts for margins.
-    
-    Returns:
-        Tuple of (content_row, content_col, content_width, content_height)
-    """
+    """Get the content area (accounts for margins)."""
     def get_content_area(self) -> Tuple[int, int, int, int]:
         return (self.row + self.margin, self.col + self.margin,
                 self.width - (2 * self.margin), self.height - (2 * self.margin))
     
-    """
-    Add a child container (panel or layout).
-    
-    Args:
-        child: Container to add
-    """
     def add_child(self, child: Container) -> None:
         super().add_child(child)
     
-    """
-    Add a panel to this layout (convenience method, same as add_child).
-    
-    Args:
-        panel: Panel to add
-    """
+    """Add a panel to this layout (convenience for add_child)."""
     def add_panel(self, panel: Panel) -> None:
         self.add_child(panel)
     
-    """
-    Add a nested layout to this layout (convenience method, same as add_child).
-    
-    Args:
-        layout: Layout to nest
-    """
+    """Add a nested layout (convenience for add_child)."""
     def add_layout(self, layout: 'BaseLayout') -> None:
         self.add_child(layout)
     
-    """
-    Update layout: arrange children within content area.
-    
-    This should be called when the layout's bounds change or when
-    children need to be repositioned.
-    """
+    """Update layout: arrange children within content area (must be implemented by subclasses)."""
     def update(self) -> None:
         raise NotImplementedError("Subclasses must implement update()")
     
-    """
-    Render this layout (renders children only, layouts have no visual representation).
-    
-    Args:
-        renderer: The ANSI renderer instance
-        force_redraw: If True, force redraw even if unchanged
-    
-    Returns:
-        Empty list (layouts don't render themselves, only children)
-    """
+    """Render this layout (returns empty list, layouts don't render themselves)."""
     def render(self, renderer: 'ANSIRendererBase' = None, force_redraw: bool = False) -> List[str]:
         # Layouts don't render themselves, only arrange children
         # Children are rendered by the renderer
@@ -811,9 +681,7 @@ class HLayout(BaseLayout):
     Panels are distributed equally across the available width.
     """
     
-    """
-    Update layout: arrange children horizontally within content area.
-    """
+    """Update layout: arrange children horizontally."""
     def update(self) -> None:
         if not self.children:
             return
@@ -873,9 +741,7 @@ class VLayout(BaseLayout):
     Panels are distributed equally across the available height.
     """
     
-    """
-    Update layout: arrange children vertically within content area.
-    """
+    """Update layout: arrange children vertically."""
     def update(self) -> None:
         if not self.children:
             return
@@ -921,18 +787,62 @@ class VLayout(BaseLayout):
         # Ensure total height doesn't exceed available space
         total_actual_height = sum(actual_heights) + total_spacing
         if total_actual_height > content_height:
-            # Reduce heights proportionally to fit
-            scale_factor = content_height / total_actual_height
-            for i in range(len(actual_heights)):
-                actual_heights[i] = int(actual_heights[i] * scale_factor)
-            # Recalculate total and adjust if needed
+            # Reduce heights to fit, but respect max_height constraints
+            # Items with max_height constraints should not be scaled below their max_height
+            # Only scale down flexible items (those without max_height constraints)
+            excess_height = total_actual_height - content_height
+            
+            # Build a list of which items have max_height constraints
+            constrained_items = []
+            for i, child in enumerate(self.children):
+                if isinstance(child, Panel) and child.max_height is not None:
+                    constrained_items.append(i)
+            
+            # Try to reduce only flexible items first
+            if flexible_items:
+                # Calculate how much we can reduce from flexible items
+                reduction_per_flexible = excess_height // len(flexible_items)
+                for idx in flexible_items:
+                    new_height = max(1, actual_heights[idx] - reduction_per_flexible)
+                    actual_heights[idx] = new_height
+                
+                # Distribute any remaining excess
+                remaining_excess = excess_height - (reduction_per_flexible * len(flexible_items))
+                for idx in flexible_items:
+                    if remaining_excess <= 0:
+                        break
+                    if actual_heights[idx] > 1:
+                        reduction = min(remaining_excess, actual_heights[idx] - 1)
+                        actual_heights[idx] -= reduction
+                        remaining_excess -= reduction
+            
+            # Recalculate total
             total_actual_height = sum(actual_heights) + total_spacing
+            
+            # If still too large, we need to scale constrained items proportionally
+            # but ensure they don't go below their max_height
+            if total_actual_height > content_height and constrained_items:
+                # Scale all items proportionally, but clamp constrained items to their max_height
+                scale_factor = content_height / total_actual_height
+                for i in range(len(actual_heights)):
+                    if i in constrained_items:
+                        child = self.children[i]
+                        min_allowed = child.max_height if isinstance(child, Panel) and child.max_height is not None else 1
+                        scaled = int(actual_heights[i] * scale_factor)
+                        actual_heights[i] = max(min_allowed, scaled)
+                    else:
+                        actual_heights[i] = max(1, int(actual_heights[i] * scale_factor))
+                
+                # Recalculate total after scaling
+                total_actual_height = sum(actual_heights) + total_spacing
+            
+            # Add back any lost space to flexible items if we ended up with too little
             if total_actual_height < content_height:
-                # Add back any lost space to the last flexible item
                 diff = content_height - total_actual_height
                 for idx in reversed(flexible_items):
                     if diff > 0:
                         actual_heights[idx] += diff
+                        diff = 0
                         break
         
         # Position items vertically
@@ -1035,9 +945,7 @@ class ANSIRendererBase(BaseRenderer):
         self.terminal_size: Tuple[int, int] = (DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS)
         self.panels: Dict[str, Panel] = {}  # Keep for backward compatibility
         self.containers: List[Container] = []  # Unified container registry
-        self.layouts: List[BaseLayout] = []  # Keep for backward compatibility
         self._initialized = False
-        self._header_lines = HEADER_LINES
         self._truecolor_support = _supports_truecolor()
     
     """Initialize the renderer and terminal."""
@@ -1057,12 +965,7 @@ class ANSIRendererBase(BaseRenderer):
         sys.stdout.flush()
         self._initialized = True
     
-    """
-    Get current terminal size.
-    
-    Returns:
-        Tuple of (columns, rows)
-    """
+    """Get current terminal size."""
     def get_terminal_size(self) -> Tuple[int, int]:
         try:
             cols, rows = shutil.get_terminal_size()
@@ -1070,24 +973,7 @@ class ANSIRendererBase(BaseRenderer):
         except (OSError, AttributeError, ValueError):
             return (DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS)
     
-    """
-    Create a new panel.
-    
-    Args:
-        panel_id: Unique identifier for the panel
-        row: Top row position (1-based)
-        col: Left column position (1-based)
-        width: Panel width in characters
-        height: Panel height in lines
-        title: Optional panel title
-        rounded: If True, use rounded corners; if False, use square corners (default)
-        border_color: Optional ANSI color code for borders
-        borderless: If True, render without borders (default: False)
-        z: Z-order for rendering (lower values render first, default: 0)
-    
-    Returns:
-        Created Panel object
-    """
+    """Create a new panel."""
     def create_panel(self, panel_id: str, row: int = 1, col: int = 1, width: int = 80, height: int = 24, 
                      title: str = "", rounded: bool = False, border_color: Optional[str] = None,
                      borderless: bool = False, z: int = 0, max_width: Optional[int] = None,
@@ -1098,97 +984,21 @@ class ANSIRendererBase(BaseRenderer):
         self.containers.append(panel)  # Add to unified registry
         return panel
     
-    """
-    Get an existing panel by ID.
-    
-    Args:
-        panel_id: Panel identifier
-    
-    Returns:
-        Panel object or None if not found
-    """
-    def get_panel(self, panel_id: str) -> Optional[Panel]:
-        return self.panels.get(panel_id)
-    
-    """
-    Create a new history graph.
-    
-    Args:
-        width: Width of the graph in characters
-        min_value: Minimum value for scaling (default: 0.0)
-        max_value: Maximum value for scaling (default: 100.0)
-        use_braille: If True, use braille characters; if False, use fallback blocks (default: True)
-    
-    Returns:
-        SingleLineGraph instance
-    """
+    """Create a new history graph."""
     def create_history_graph(self, width: int, min_value: float = 0.0, max_value: float = 100.0, use_braille: bool = True) -> SingleLineGraph:
         return SingleLineGraph(width, min_value, max_value, use_braille=use_braille)
     
-    """
-    Create a new multi-line history graph.
-    
-    Args:
-        width_chars: Width of the graph in characters
-        height_chars: Height of the graph in character rows
-        min_value: Minimum value for scaling (default: 0.0)
-        max_value: Maximum value for scaling (default: 100.0)
-        use_braille: If True, use braille characters; if False, use fallback blocks (default: True)
-        top_to_bottom: If True, render from top to bottom; if False, render from bottom to top (default: False)
-    
-    Returns:
-        MultiLineGraph instance
-    """
+    """Create a new multi-line history graph."""
     def create_multi_line_graph(self, width_chars: int, height_chars: int, min_value: float = 0.0, 
                                  max_value: float = 100.0, use_braille: bool = True,
                                  top_to_bottom: bool = False) -> MultiLineGraph:
         return MultiLineGraph(width_chars, height_chars, min_value, max_value, use_braille=use_braille, top_to_bottom=top_to_bottom)
     
-    """
-    Add a layout to be managed by the renderer.
-    
-    Layouts are updated automatically when terminal resizes.
-    
-    Args:
-        layout: Layout object (HLayout or VLayout)
-    """
+    """Add a layout to be managed by the renderer."""
     def add_layout(self, layout: BaseLayout) -> None:
-        self.layouts.append(layout)
-        self.containers.append(layout)  # Add to unified registry
+        self.containers.append(layout)  # Add to unified container registry
     
-    """
-    Update all layouts based on current terminal size.
-    
-    This should be called after terminal resize or when layouts change.
-    """
-    def update_layouts(self) -> None:
-        cols, rows = self.terminal_size
-        content_start_row = self._header_lines + 1
-        content_start_col = 1
-        content_width = cols
-        content_height = rows - self._header_lines
-        
-        for layout in self.layouts:
-            layout.set_bounds(content_start_row, content_start_col, content_width, content_height)
-            layout.update()
-    
-    """
-    Create a horizontal progress bar with gradient colors.
-    
-    Uses draw_bar_gradient for smooth per-cell gradient.
-    This method is kept for backward compatibility.
-    
-    Args:
-        value: Value percentage (0-100)
-        width: Bar width in characters
-        low_color: Color for low values (0-50%)
-        mid_color: Color for mid values (50%)
-        high_color: Color for high values (50-100%)
-        empty_color: Color for unfilled portion (gray)
-    
-    Returns:
-        Formatted bar string with gradient colors
-    """
+    """Create a horizontal progress bar with gradient colors (backward compatibility)."""
     def draw_bar(self, value: float, width: int, 
                  low_color: str = ANSIColors.BRIGHT_GREEN,
                  mid_color: str = ANSIColors.BRIGHT_YELLOW,
@@ -1199,29 +1009,11 @@ class ANSIRendererBase(BaseRenderer):
             self._truecolor_support
         )
     
-    """
-    Create a status bar with standard gradient colors.
-    
-    Uses the default color scheme: winter green -> yellow -> red.
-    This is the standard bar type for all UI components.
-    
-    Args:
-        value: Value percentage (0-100)
-        width: Bar width in characters
-    
-    Returns:
-        Formatted bar string with per-cell RGB gradient
-    """
+    """Create a status bar with standard gradient colors (winter green -> yellow -> red)."""
     def draw_status_bar(self, value: float, width: int) -> str:
         return draw_status_bar(value, width, self._truecolor_support)
     
-    """
-    Move cursor to specified position.
-    
-    Args:
-        row: Row position (1-based)
-        col: Column position (1-based)
-    """
+    """Move cursor to specified position (1-based)."""
     def move_cursor(self, row: int, col: int) -> None:
         sys.stdout.write(f'\033[{row};{col}H')
     
@@ -1286,16 +1078,7 @@ class ANSIRendererBase(BaseRenderer):
         
         return clipped
     
-    """
-    Render all registered containers, sorted by z-order.
-    
-    Containers with lower z values are rendered first (appear behind).
-    Containers with higher z values are rendered last (appear on top).
-    Children are automatically clipped to parent content areas.
-    
-    Args:
-        force_redraw: If True, redraw all containers even if content unchanged
-    """
+    """Render all registered containers, sorted by z-order (lower z renders first)."""
     def render_all_panels(self, force_redraw: bool = False) -> None:
         # Sort containers by z-order (lower z renders first)
         sorted_containers = sorted(self.containers, key=lambda c: c.z)
@@ -1306,19 +1089,7 @@ class ANSIRendererBase(BaseRenderer):
             if container.parent is None:
                 self._render_container(container, force_redraw=force_redraw)
     
-    """
-    Render a container and its children.
-    
-    This is the internal rendering method that handles clipping automatically.
-    
-    Args:
-        container: Container to render
-        force_redraw: If True, force redraw even if unchanged
-        clip_row: Optional clipping region (for nested containers)
-        clip_col: Optional clipping region
-        clip_width: Optional clipping region
-        clip_height: Optional clipping region
-    """
+    """Render a container and its children (internal method that handles clipping)."""
     def _render_container(self, container: Container, force_redraw: bool = False,
                          clip_row: Optional[int] = None, clip_col: Optional[int] = None,
                          clip_width: Optional[int] = None, clip_height: Optional[int] = None) -> None:
@@ -1360,92 +1131,25 @@ class ANSIRendererBase(BaseRenderer):
                     clipped_line = line
             
             # Move cursor and render line
+            # Use absolute cursor positioning - no need for \n since we position explicitly for each line
             self.move_cursor(render_row, render_col)
             sys.stdout.write(clipped_line)
-            # Only write newline if not on the last row of the terminal (prevents scrolling)
-            if render_row < rows:
-                sys.stdout.write('\n')
         
         # Render children (automatically clipped to container's content area and external clip region)
         container.render_children(self, force_redraw=force_redraw,
                                  clip_row=clip_row, clip_col=clip_col,
                                  clip_width=clip_width, clip_height=clip_height)
     
-    """
-    Render a panel at its position with optional clipping.
-    
-    This is kept for backward compatibility. New code should use render_all_panels()
-    which automatically handles clipping based on parent containers.
-    
-    Args:
-        panel: Panel to render
-        force_redraw: If True, redraw even if content unchanged
-        clip_row: Optional top row of clipping region (if None, no clipping)
-        clip_col: Optional left column of clipping region
-        clip_width: Optional width of clipping region
-        clip_height: Optional height of clipping region
-    """
+    """Render a panel (backward compatibility, use render_all_panels() for new code)."""
     def render_panel(self, panel: Panel, force_redraw: bool = False, 
                      clip_row: Optional[int] = None, clip_col: Optional[int] = None,
                      clip_width: Optional[int] = None, clip_height: Optional[int] = None) -> None:
-        if not force_redraw and not panel.has_changed():
-            return
-        
-        panel_lines = panel.render()
-        panel_bottom = panel.row + len(panel_lines) - 1
-        panel_right = panel.col + panel.width - 1
-        
-        # Check if panel is completely outside clipping region
-        if clip_row is not None and clip_col is not None and clip_width is not None and clip_height is not None:
-            clip_bottom = clip_row + clip_height - 1
-            clip_right = clip_col + clip_width - 1
-            
-            # Panel is completely outside clipping region
-            if (panel_bottom < clip_row or panel.row > clip_bottom or
-                panel_right < clip_col or panel.col > clip_right):
-                return
-        
-        for i, line in enumerate(panel_lines):
-            render_row = panel.row + i
-            
-            # Skip if outside clipping region vertically
-            if clip_row is not None and clip_height is not None:
-                if render_row < clip_row or render_row > clip_row + clip_height - 1:
-                    continue
-            
-            # Calculate horizontal clipping for this line
-            render_col = panel.col
-            clipped_line = line
-            
-            if clip_col is not None and clip_width is not None:
-                clip_right = clip_col + clip_width - 1
-                
-                # Panel starts before clip region
-                if panel.col < clip_col:
-                    start_offset = clip_col - panel.col
-                    max_width = min(clip_width, panel.width - start_offset)
-                    clipped_line = self._clip_line(line, max_width, start_offset)
-                    render_col = clip_col
-                # Panel extends beyond clip region
-                elif panel_right > clip_right:
-                    max_width = clip_width - (panel.col - clip_col)
-                    if max_width > 0:
-                        clipped_line = self._clip_line(line, max_width, 0)
-                    else:
-                        continue  # Line is completely outside clip region
-                # Panel is completely within clip region (or starts at clip_col)
-                # No clipping needed, use line as-is
-            
-            self.move_cursor(render_row, render_col)
-            sys.stdout.write(clipped_line)
+        # Delegate to _render_container for consistent rendering logic
+        self._render_container(panel, force_redraw=force_redraw,
+                             clip_row=clip_row, clip_col=clip_col,
+                             clip_width=clip_width, clip_height=clip_height)
     
-    """
-    Render a header line.
-    
-    Args:
-        text: Header text (may contain ANSI codes)
-        style: ANSI style/color for header
-    """
+    """Render a header line."""
     def render_header(self, text: str, style: str = ANSIColors.BOLD + ANSIColors.BRIGHT_CYAN) -> None:
         width = self.terminal_size[0]
         padding = (width - visible_length(text)) // 2
@@ -1453,30 +1157,11 @@ class ANSIRendererBase(BaseRenderer):
         sys.stdout.write(header + '\n')
         sys.stdout.write('─' * width + '\n')
     
-    """
-    Render metrics data.
-    
-    This is a placeholder - subclasses or external controllers
-    should override or use the panel methods to render content.
-    
-    Args:
-        data: Dictionary with collector data
-    """
+    """Render metrics data (required by BaseRenderer, but unused - use render_all_panels() instead)."""
     def render(self, data: Dict[str, Any]) -> None:
-        if not self._initialized:
-            self.setup()
-        
-        # Update terminal size
-        self.terminal_size = self.get_terminal_size()
-        
-        # Move cursor to top
-        sys.stdout.write('\033[H')
-        
-        # Default: render all panels
-        for panel in self.panels.values():
-            self.render_panel(panel)
-        
-        sys.stdout.flush()
+        # Minimal implementation for abstract base class requirement
+        # Actual rendering uses render_all_panels() instead
+        pass
     
     """Clear the display."""
     def clear(self) -> None:

@@ -56,8 +56,13 @@ class CPUCollector(BaseCollector):
         self._cpu_name = None
         self._cpu_tdp = None
         self.wattage_mode = wattage_mode.lower()
+        self._cpu_percent_initialized = False
         self._init_cpu_name()
         self._init_tdp()
+        # Warm up cpu_percent() with initial call to establish baseline
+        # This allows subsequent calls to use interval=None (non-blocking)
+        psutil.cpu_percent(interval=0.01)
+        self._cpu_percent_initialized = True
     
     def _init_cpu_name(self) -> None:
         """Initialize CPU name/model information."""
@@ -69,9 +74,22 @@ class CPUCollector(BaseCollector):
             else:
                 # Fallback to platform module
                 self._cpu_name = platform.processor()
-                if not self._cpu_name or self._cpu_name == '':
-                    # Try alternative method
-                    if platform.system() == 'Linux':
+                if not self._cpu_name or self._cpu_name == '' or self._cpu_name.lower() == 'arm':
+                    # Try platform-specific methods
+                    if platform.system() == 'Darwin':  # macOS
+                        try:
+                            import subprocess
+                            result = subprocess.run(
+                                ['sysctl', '-n', 'machdep.cpu.brand_string'],
+                                capture_output=True,
+                                text=True,
+                                timeout=2
+                            )
+                            if result.returncode == 0 and result.stdout.strip():
+                                self._cpu_name = result.stdout.strip()
+                        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                            pass
+                    elif platform.system() == 'Linux':
                         try:
                             with open('/proc/cpuinfo', 'r') as f:
                                 for line in f:
@@ -81,7 +99,7 @@ class CPUCollector(BaseCollector):
                         except (IOError, IndexError):
                             pass
                     
-                    if not self._cpu_name:
+                    if not self._cpu_name or self._cpu_name.lower() == 'arm':
                         self._cpu_name = platform.machine()
         except Exception:
             self._cpu_name = 'Unknown CPU'
@@ -219,17 +237,29 @@ class CPUCollector(BaseCollector):
                     result_parts = [p for p in result_parts if not re.match(r'\d+-core', p.lower())]
                     return ' '.join(result_parts).title()
         
-        # Apple: Prefer "Apple M1/M2/M3..."
-        if 'apple' in cpu_name_lower or 'm1' in cpu_name_lower or 'm2' in cpu_name_lower:
-            apple_pattern = r'\b(m[123])\b'
+        # Apple: Prefer "Apple M[N] [Pro/Max/Ultra]..." (M followed by any number)
+        if 'apple' in cpu_name_lower:
+            # Match "M" followed by digits, then optional suffix like "Pro", "Max", "Ultra"
+            apple_pattern = r'\b(m\d+)\s+([a-z]+)\b'
             match = re.search(apple_pattern, cpu_name_lower)
             if match:
+                result = match.group(1).upper()
+                suffix = match.group(2).title()
+                # Only include suffix if it's a known Apple suffix (Pro, Max, Ultra)
+                if suffix.lower() in ['pro', 'max', 'ultra']:
+                    return f"Apple {result} {suffix}"
+                else:
+                    return f"Apple {result}"
+            # Fallback: match just "M[N]" without suffix
+            apple_pattern_simple = r'\b(m\d+)\b'
+            match = re.search(apple_pattern_simple, cpu_name_lower)
+            if match:
                 return f"Apple {match.group(1).upper()}"
-            if 'apple' in cpu_name_lower:
-                parts = cleaned.split()
-                for i, part in enumerate(parts):
-                    if part.lower() == 'apple' and i + 1 < len(parts):
-                        return f"Apple {parts[i + 1]}"
+            # Final fallback: if 'apple' in name, try to extract after "Apple"
+            parts = cleaned.split()
+            for i, part in enumerate(parts):
+                if part.lower() == 'apple' and i + 1 < len(parts):
+                    return f"Apple {parts[i + 1]}"
         
         # Fallback: Return cleaned version (removed trademarks, frequency, normalized whitespace)
         return cleaned
@@ -312,9 +342,9 @@ class CPUCollector(BaseCollector):
             - overall_usage: Overall CPU usage percentage (0-100, rounded to integer)
             - per_core_usage: List of per-core CPU usage percentages (rounded to integers)
         """
-        # Get per-core CPU usage (0.1 second interval for accuracy)
-        # This call blocks for 0.1 seconds and returns a list of per-core percentages
-        per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
+        # Get per-core CPU usage (non-blocking after initialization)
+        # Using interval=None makes this instant - psutil uses time since last call
+        per_core_usage = psutil.cpu_percent(interval=None, percpu=True)
         
         # Round per-core usage to integers
         per_core_usage = [round(usage) for usage in per_core_usage]
@@ -325,7 +355,7 @@ class CPUCollector(BaseCollector):
             overall_usage = sum(per_core_usage) / len(per_core_usage)
         else:
             # Fallback: if per_core_usage is empty, get overall separately
-            overall_usage = psutil.cpu_percent(interval=0.1)
+            overall_usage = psutil.cpu_percent(interval=None)
         
         # Round overall usage to integer
         overall_usage = round(overall_usage)
@@ -479,9 +509,6 @@ class CPUCollector(BaseCollector):
                     'sensors': sensor_data,
                 }
         except (AttributeError, RuntimeError, OSError, Exception) as e:
-            # Add debug logging if needed
-            import sys
-            print(f"Temperature collection error: {e}", file=sys.stderr)
             pass
         
         return None
