@@ -1046,8 +1046,9 @@ class ANSIRendererBase(BaseRenderer):
     """Create a new multi-line history graph."""
     def create_multi_line_graph(self, width_chars: int, height_chars: int, min_value: float = 0.0, 
                                  max_value: float = 100.0, use_braille: bool = True,
-                                 top_to_bottom: bool = False) -> MultiLineGraph:
-        return MultiLineGraph(width_chars, height_chars, min_value, max_value, use_braille=use_braille, top_to_bottom=top_to_bottom)
+                                 top_to_bottom: bool = False, show_max_label: bool = False, 
+                                 show_min_label: bool = False) -> MultiLineGraph:
+        return MultiLineGraph(width_chars, height_chars, min_value, max_value, use_braille=use_braille, top_to_bottom=top_to_bottom, show_max_label=show_max_label, show_min_label=show_min_label)
     
     """Add a layout to be managed by the renderer."""
     def add_layout(self, layout: BaseLayout) -> None:

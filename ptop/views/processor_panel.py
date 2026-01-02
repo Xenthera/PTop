@@ -291,8 +291,23 @@ class ProcessorPanel:
                         ]
                         core_panel.add_inline(*inline_elements, renderer=self.renderer)
                     
-                    # Update right label with percentage
-                    core_panel.right_labels = [f"{int(core_usage):3d}%"]
+                    # Update right label with percentage and frequency if available
+                    per_core_freq = cpu_data.get('frequencies', [])
+                    core_freq = None
+                    if per_core_freq and i < len(per_core_freq):
+                        core_freq = per_core_freq[i]
+                    
+                    # Format frequency display
+                    if core_freq is not None and core_freq > 0:
+                        # Format frequency: show as GHz if >= 1GHz, otherwise MHz
+                        if core_freq >= 1000.0:
+                            freq_ghz = core_freq / 1000.0
+                            freq_str = f"{freq_ghz:.1f}GHz"
+                        else:
+                            freq_str = f"{int(round(core_freq))}MHz"
+                        core_panel.right_labels = [f"{int(core_usage):3d}%", freq_str]
+                    else:
+                        core_panel.right_labels = [f"{int(core_usage):3d}%"]
         
         # Update inline panel 1 with overall CPU usage + temp graph + temp text
         cpu_usage = cpu_data.get('overall', 0.0)

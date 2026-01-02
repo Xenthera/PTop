@@ -439,11 +439,14 @@ class MultiLineGraph:
         colors: List of ANSI color codes or RGB tuples (r, g, b) for gradient stops.
                 Colors are evenly distributed from 0% to 100%.
                 Defaults to [green, yellow, red] if None.
+        show_max_label: If True, display the max value as a label in the top left corner (default: False)
+        show_min_label: If True, display the min value as a label in the bottom left corner (default: False)
     """
     def __init__(self, width_chars: int, height_chars: int, min_value: float = 0.0, 
                  max_value: float = 100.0, use_braille: bool = True,
                  top_to_bottom: bool = False,
-                 colors: Optional[List[Union[str, Tuple[int, int, int]]]] = None):
+                 colors: Optional[List[Union[str, Tuple[int, int, int]]]] = None,
+                 show_max_label: bool = False, show_min_label: bool = False):
         self._width_chars = width_chars
         self._height_chars = height_chars
         self.min_value = min_value
@@ -457,8 +460,10 @@ class MultiLineGraph:
         self.use_braille = use_braille
         self.top_to_bottom = top_to_bottom  # If True, virtual Y=0 is at top; if False, at bottom
         self.colors = colors
+        self.show_max_label = show_max_label  # Show max value label in top left
+        self.show_min_label = show_min_label  # Show min value label in bottom left
         # Performance: cache RGB color list and value_range
-        self._cached_rgb_colors: Optional[List[Tuple[int, int, int]]] = None
+        self._cached_rgb_colors: Optional[List[Union[int, int, int]]] = None
         self._cached_value_range: float = max_value - min_value
     
     @property
@@ -749,6 +754,127 @@ class MultiLineGraph:
                 line_parts.append(color_code + glyph)
             
             graph_lines.append(''.join(line_parts) + ANSIColors.RESET)
+        
+        # Add max value label to top left if enabled
+        if self.show_max_label and graph_lines:
+            # Format the max value (e.g., "100%", "75.5°C", etc.)
+            # Determine if we should show as percentage or raw value
+            if self.max_value == 100.0 and self.min_value == 0.0:
+                label_text = "100%"
+            elif self.max_value == int(self.max_value):
+                label_text = f"{int(self.max_value)}"
+            else:
+                label_text = f"{self.max_value:.1f}"
+            
+            # Use a subtle color for the label (bright black/gray)
+            label_color = ANSIColors.BRIGHT_BLACK
+            label = label_color + label_text + ANSIColors.RESET
+            
+            # Overlay the label on the first line (top line) in the top left
+            # Replace the first N visible characters with the label
+            first_line = graph_lines[0]
+            label_length = len(label_text)
+            
+            # Extract the color code from the first line (if any) to preserve it
+            # The first line starts with a color code, then braille chars, then RESET at the end
+            # We want to replace the first few braille characters with our label
+            # Find where the actual content (braille chars) starts
+            color_code = ""
+            content_start = 0
+            if first_line.startswith('\033['):
+                # Extract the color code
+                end_idx = first_line.find('m')
+                if end_idx != -1:
+                    color_code = first_line[:end_idx + 1]
+                    content_start = end_idx + 1
+            
+            # Replace the first label_length characters of visible content with the label
+            # We need to skip ANSI codes and count only visible characters
+            visible_chars_skipped = 0
+            i = content_start
+            result_parts = [color_code]  # Start with the original color code
+            
+            # Skip the first label_length visible characters (these will be replaced by the label)
+            while i < len(first_line) and visible_chars_skipped < label_length:
+                if first_line[i] == '\033' and i + 1 < len(first_line) and first_line[i + 1] == '[':
+                    # Skip ANSI escape sequence
+                    j = i + 2
+                    while j < len(first_line) and first_line[j] not in 'mH':
+                        j += 1
+                    if j < len(first_line):
+                        j += 1
+                    i = j
+                else:
+                    # Skip this visible character (it will be replaced)
+                    visible_chars_skipped += 1
+                    i += 1
+            
+            # Now insert the label and continue with the rest of the line
+            result_parts.append(label)
+            # Add the rest of the line (from position i onwards)
+            if i < len(first_line):
+                result_parts.append(first_line[i:])
+            
+            graph_lines[0] = ''.join(result_parts)
+        
+        # Add min value label to bottom left if enabled
+        if self.show_min_label and graph_lines:
+            # Format the min value (e.g., "0%", "30°C", etc.)
+            # Determine if we should show as percentage or raw value
+            if self.min_value == 0.0 and self.max_value == 100.0:
+                label_text = "0%"
+            elif self.min_value == int(self.min_value):
+                label_text = f"{int(self.min_value)}"
+            else:
+                label_text = f"{self.min_value:.1f}"
+            
+            # Use a subtle color for the label (bright black/gray)
+            label_color = ANSIColors.BRIGHT_BLACK
+            label = label_color + label_text + ANSIColors.RESET
+            
+            # Overlay the label on the last line (bottom line) in the bottom left
+            # Replace the first N visible characters with the label
+            last_line = graph_lines[-1]
+            label_length = len(label_text)
+            
+            # Extract the color code from the last line (if any) to preserve it
+            color_code = ""
+            content_start = 0
+            if last_line.startswith('\033['):
+                # Extract the color code
+                end_idx = last_line.find('m')
+                if end_idx != -1:
+                    color_code = last_line[:end_idx + 1]
+                    content_start = end_idx + 1
+            
+            # Replace the first label_length characters of visible content with the label
+            # We need to skip ANSI codes and count only visible characters
+            visible_chars_skipped = 0
+            i = content_start
+            result_parts = [color_code]  # Start with the original color code
+            
+            # Skip the first label_length visible characters (these will be replaced by the label)
+            while i < len(last_line) and visible_chars_skipped < label_length:
+                if last_line[i] == '\033' and i + 1 < len(last_line) and last_line[i + 1] == '[':
+                    # Skip ANSI escape sequence
+                    j = i + 2
+                    while j < len(last_line) and last_line[j] not in 'mH':
+                        j += 1
+                    if j < len(last_line):
+                        j += 1
+                    i = j
+                else:
+                    # Skip this visible character (it will be replaced)
+                    visible_chars_skipped += 1
+                    i += 1
+            
+            # Now insert the label and continue with the rest of the line
+            result_parts.append(label)
+            # Add the rest of the line (from position i onwards)
+            if i < len(last_line):
+                result_parts.append(last_line[i:])
+            
+            graph_lines[-1] = ''.join(result_parts)
         
         return '\n'.join(graph_lines)
     

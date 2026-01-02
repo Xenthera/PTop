@@ -36,6 +36,7 @@ class HistoryPanel:
         self.uptime = None
         self.graph_top_obj = None
         self.graph_bottom_obj = None
+        self._gpu_in_layout = False  # Track if separator and GPU graph are in layout
         
         self._setup_panel()
     
@@ -79,15 +80,14 @@ class HistoryPanel:
             max_height=1
         )
         
-        # Add panels to VLayout
+        # Add panels to VLayout (initially only CPU graph and uptime, GPU elements added dynamically)
         self.vlayout.add_panel(self.graph_top)
-        self.vlayout.add_panel(self.separator)
-        self.vlayout.add_panel(self.graph_bottom)
         self.vlayout.add_panel(self.uptime)
         
         # Create multi-line graphs (dimensions will be updated dynamically)
-        self.graph_top_obj = self.renderer.create_multi_line_graph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=False)
-        self.graph_bottom_obj = self.renderer.create_multi_line_graph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=True)
+        # Enable max and min labels for graphs to show "100%" in top left and "0%" in bottom left
+        self.graph_top_obj = self.renderer.create_multi_line_graph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=False, show_max_label=True, show_min_label=True)
+        self.graph_bottom_obj = self.renderer.create_multi_line_graph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=True, show_max_label=True, show_min_label=True)
     
     def update_layout(self) -> None:
         """Update panel layout bounds based on current panel size."""
@@ -105,30 +105,40 @@ class HistoryPanel:
         cpu_data = metrics.get('cpu', {})
         gpu_data = metrics.get('gpu', {})
         
+        # Check if GPU data is available (has actual GPUs)
+        has_gpu_data = gpu_data.get('count', 0) > 0
+        
+        # Update panel labels: CPU on left, GPU on right (if available)
+        self.panel.clear_labels()
+        self.panel.add_left_label("CPU")
+        if has_gpu_data:
+            self.panel.add_right_label("GPU")
+        
+        # Dynamically add/remove separator and GPU graph based on GPU data availability
+        if has_gpu_data and not self._gpu_in_layout:
+            # Add separator and GPU graph to layout (insert before uptime)
+            # Find uptime index
+            uptime_idx = None
+            for i, child in enumerate(self.vlayout.children):
+                if child == self.uptime:
+                    uptime_idx = i
+                    break
+            if uptime_idx is not None:
+                # Insert separator and graph_bottom before uptime
+                # We need to temporarily remove uptime, add separator and graph_bottom, then add uptime back
+                self.vlayout.remove_child(self.uptime)
+                self.vlayout.add_panel(self.separator)
+                self.vlayout.add_panel(self.graph_bottom)
+                self.vlayout.add_panel(self.uptime)
+            self._gpu_in_layout = True
+        elif not has_gpu_data and self._gpu_in_layout:
+            # Remove separator and GPU graph from layout
+            self.vlayout.remove_child(self.separator)
+            self.vlayout.remove_child(self.graph_bottom)
+            self._gpu_in_layout = False
+        
         # Get overall CPU usage
         cpu_usage = cpu_data.get('overall', 0.0)
-        
-        # Update separator panel with CPU↑ and GPU↓ labels
-        self.separator.clear()
-        cpu_text = "CPU"
-        gpu_text = "GPU"
-        cpu_arrow = "↑"
-        gpu_arrow = "↓"
-        cpu_label_text = cpu_text + cpu_arrow
-        gpu_label_text = gpu_text + gpu_arrow
-        cpu_label = ANSIColors.BRIGHT_WHITE + cpu_text + ANSIColors.RESET + ANSIColors.CYAN + cpu_arrow + ANSIColors.RESET
-        gpu_label = ANSIColors.BRIGHT_WHITE + gpu_text + ANSIColors.RESET + ANSIColors.CYAN + gpu_arrow + ANSIColors.RESET
-        
-        # Calculate centered layout: ...───CPU↑─GPU↓───...
-        total_width = self.separator.width
-        label_width = len(cpu_label_text) + 1 + len(gpu_label_text)  # CPU↑─GPU↓
-        line_width = total_width - label_width
-        left_lines = line_width // 2
-        right_lines = line_width - left_lines
-        
-        line_char = ANSIColors.BRIGHT_BLACK + '─' + ANSIColors.RESET
-        separator_line = line_char * left_lines + cpu_label + line_char + gpu_label + line_char * right_lines
-        self.separator.add_line(separator_line)
         
         # Update top graph panel (CPU usage, normal orientation)
         self.graph_top.clear()
@@ -150,29 +160,51 @@ class HistoryPanel:
             if line:  # Skip empty lines
                 self.graph_top.add_line(line)
         
-        # Update bottom graph panel (GPU usage, top-to-bottom rendering)
-        gpu_usage = 0.0
-        if gpu_data:
+        # Update separator and GPU graph only if GPU data is available
+        if has_gpu_data:
+            # Update separator panel with CPU↑ and GPU↓ labels
+            self.separator.clear()
+            cpu_text = "CPU"
+            gpu_text = "GPU"
+            cpu_arrow = "↑"
+            gpu_arrow = "↓"
+            cpu_label_text = cpu_text + cpu_arrow
+            gpu_label_text = gpu_text + gpu_arrow
+            cpu_label = ANSIColors.BRIGHT_WHITE + cpu_text + ANSIColors.RESET + ANSIColors.CYAN + cpu_arrow + ANSIColors.RESET
+            gpu_label = ANSIColors.BRIGHT_WHITE + gpu_text + ANSIColors.RESET + ANSIColors.CYAN + gpu_arrow + ANSIColors.RESET
+            
+            # Calculate centered layout: ...───CPU↑─GPU↓───...
+            total_width = self.separator.width
+            label_width = len(cpu_label_text) + 1 + len(gpu_label_text)  # CPU↑─GPU↓
+            line_width = total_width - label_width
+            left_lines = line_width // 2
+            right_lines = line_width - left_lines
+            
+            line_char = ANSIColors.BRIGHT_BLACK + '─' + ANSIColors.RESET
+            separator_line = line_char * left_lines + cpu_label + line_char + gpu_label + line_char * right_lines
+            self.separator.add_line(separator_line)
+            
+            # Update bottom graph panel (GPU usage, top-to-bottom rendering)
             gpu_usage = gpu_data.get('overall', {}).get('usage', 0.0)
-        
-        self.graph_bottom.clear()
-        
-        # Update graph dimensions to match panel size
-        if self.graph_bottom_obj.width_chars != self.graph_bottom.width or self.graph_bottom_obj.height_chars != self.graph_bottom.height:
-            self.graph_bottom_obj.width_chars = self.graph_bottom.width
-            self.graph_bottom_obj.height_chars = self.graph_bottom.height
-        
-        # Update graph with GPU usage
-        self.graph_bottom_obj.add_value(gpu_usage)
-        
-        # Get graph as string and split into lines
-        graph_string = self.graph_bottom_obj.get_graph_string(self.renderer)
-        graph_lines = graph_string.split('\n')
-        
-        # Add graph lines to panel
-        for line in graph_lines:
-            if line:  # Skip empty lines
-                self.graph_bottom.add_line(line)
+            
+            self.graph_bottom.clear()
+            
+            # Update graph dimensions to match panel size
+            if self.graph_bottom_obj.width_chars != self.graph_bottom.width or self.graph_bottom_obj.height_chars != self.graph_bottom.height:
+                self.graph_bottom_obj.width_chars = self.graph_bottom.width
+                self.graph_bottom_obj.height_chars = self.graph_bottom.height
+            
+            # Update graph with GPU usage
+            self.graph_bottom_obj.add_value(gpu_usage)
+            
+            # Get graph as string and split into lines
+            graph_string = self.graph_bottom_obj.get_graph_string(self.renderer)
+            graph_lines = graph_string.split('\n')
+            
+            # Add graph lines to panel
+            for line in graph_lines:
+                if line:  # Skip empty lines
+                    self.graph_bottom.add_line(line)
         
         # Update CPU uptime inline (from CPU collector)
         cpu_uptime = cpu_data.get('uptime')
