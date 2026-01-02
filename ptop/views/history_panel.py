@@ -7,6 +7,7 @@ This module manages the history panel (panel1) which displays:
 - CPU uptime information
 """
 
+import datetime
 from typing import Dict, Any
 from ..ui.ansi_renderer import ANSIRendererBase, VLayout
 from ..ui.colors import ANSIColors
@@ -33,7 +34,6 @@ class HistoryPanel:
         self.graph_top = None
         self.separator = None
         self.graph_bottom = None
-        self.uptime = None
         self.graph_top_obj = None
         self.graph_bottom_obj = None
         self._gpu_in_layout = False  # Track if separator and GPU graph are in layout
@@ -73,21 +73,17 @@ class HistoryPanel:
             borderless=True
         )
         
-        # Create inline panel for CPU uptime (gray label)
-        self.uptime = self.renderer.create_panel(
-            'panel1_uptime',
-            borderless=True,
-            max_height=1
-        )
-        
-        # Add panels to VLayout (initially only CPU graph and uptime, GPU elements added dynamically)
+        # Add panels to VLayout (initially only CPU graph, GPU elements added dynamically)
         self.vlayout.add_panel(self.graph_top)
-        self.vlayout.add_panel(self.uptime)
         
         # Create multi-line graphs (dimensions will be updated dynamically)
         # Enable max and min labels for graphs to show "100%" in top left and "0%" in bottom left
         self.graph_top_obj = self.renderer.create_multi_line_graph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=False, show_max_label=True, show_min_label=True)
+        # CPU graph uses default colors (green -> yellow -> red)
+        
         self.graph_bottom_obj = self.renderer.create_multi_line_graph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=True, show_max_label=True, show_min_label=True)
+        # GPU graph uses cyan -> blue -> magenta gradient (similar structure to CPU but different colors)
+        self.graph_bottom_obj.colors = [ANSIColors.BRIGHT_CYAN, ANSIColors.BRIGHT_BLUE, ANSIColors.BRIGHT_MAGENTA]
     
     def update_layout(self) -> None:
         """Update panel layout bounds based on current panel size."""
@@ -108,28 +104,30 @@ class HistoryPanel:
         # Check if GPU data is available (has actual GPUs)
         has_gpu_data = gpu_data.get('count', 0) > 0
         
-        # Update panel labels: CPU on left, GPU on right (if available)
+        # Update panel labels: CPU on left, system time on top center, uptime on bottom center, GPU on bottom-left (if available)
+        # Note: We always update labels every frame to ensure live updates (system time and uptime change)
         self.panel.clear_labels()
         self.panel.add_left_label("CPU")
+        
+        # Add system time to top center (updates live every frame)
+        current_time = datetime.datetime.now().strftime("%H:%M:%S")
+        self.panel.add_center_label("local " + current_time)
+        
+        # Add uptime to bottom center (from CPU collector, updates live every frame)
+        cpu_uptime = cpu_data.get('uptime')
+        if cpu_uptime:
+            # Remove "uptime " prefix if present, then prepend "up "
+            uptime_display = cpu_uptime.replace("uptime ", "") if cpu_uptime.startswith("uptime ") else cpu_uptime
+            self.panel.add_bottom_center_label("up " + uptime_display)
+        
         if has_gpu_data:
-            self.panel.add_right_label("GPU")
+            self.panel.add_bottom_left_label("GPU")
         
         # Dynamically add/remove separator and GPU graph based on GPU data availability
         if has_gpu_data and not self._gpu_in_layout:
-            # Add separator and GPU graph to layout (insert before uptime)
-            # Find uptime index
-            uptime_idx = None
-            for i, child in enumerate(self.vlayout.children):
-                if child == self.uptime:
-                    uptime_idx = i
-                    break
-            if uptime_idx is not None:
-                # Insert separator and graph_bottom before uptime
-                # We need to temporarily remove uptime, add separator and graph_bottom, then add uptime back
-                self.vlayout.remove_child(self.uptime)
-                self.vlayout.add_panel(self.separator)
-                self.vlayout.add_panel(self.graph_bottom)
-                self.vlayout.add_panel(self.uptime)
+            # Add separator and GPU graph to layout (after CPU graph)
+            self.vlayout.add_panel(self.separator)
+            self.vlayout.add_panel(self.graph_bottom)
             self._gpu_in_layout = True
         elif not has_gpu_data and self._gpu_in_layout:
             # Remove separator and GPU graph from layout
@@ -206,13 +204,4 @@ class HistoryPanel:
                 if line:  # Skip empty lines
                     self.graph_bottom.add_line(line)
         
-        # Update CPU uptime inline (from CPU collector)
-        cpu_uptime = cpu_data.get('uptime')
-        self.uptime.clear()
-        if cpu_uptime:
-            gray_uptime = ANSIColors.BRIGHT_BLACK + cpu_uptime + ANSIColors.RESET
-            self.uptime.add_inline(
-                InlineText(gray_uptime),
-                renderer=self.renderer
-            )
 

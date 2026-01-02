@@ -268,13 +268,16 @@ class Panel(Container):
         self.max_height = max_height
         self.left_labels: List[str] = []
         self.right_labels: List[str] = []
+        self.center_labels: List[str] = []
         self.bottom_left_labels: List[str] = []
         self.bottom_right_labels: List[str] = []
+        self.bottom_center_labels: List[str] = []
         # Title is always the first left-aligned label (only if not borderless)
         if title and not borderless:
             self.left_labels.append(title)
         self.content_lines: List[str] = []
         self._last_content_hash: Optional[int] = None
+        self._last_labels_hash: Optional[int] = None
         self._last_rendered_lines: List[str] = []
         self._last_rendered_dimensions: Optional[Tuple[int, int, int, int]] = None  # (row, col, width, height)
     
@@ -288,6 +291,11 @@ class Panel(Container):
         if label:
             self.right_labels.append(label)
     
+    """Add a center-aligned label to the top border."""
+    def add_center_label(self, label: str) -> None:
+        if label:
+            self.center_labels.append(label)
+    
     """Add a left-aligned label to the bottom border."""
     def add_bottom_left_label(self, label: str) -> None:
         if label:
@@ -298,12 +306,19 @@ class Panel(Container):
         if label:
             self.bottom_right_labels.append(label)
     
+    """Add a center-aligned label to the bottom border."""
+    def add_bottom_center_label(self, label: str) -> None:
+        if label:
+            self.bottom_center_labels.append(label)
+    
     """Clear all labels, keeping only the title as first left label."""
     def clear_labels(self) -> None:
         self.left_labels = []
         self.right_labels = []
+        self.center_labels = []
         self.bottom_left_labels = []
         self.bottom_right_labels = []
+        self.bottom_center_labels = []
         if self.title:
             self.left_labels.append(self.title)
     
@@ -420,6 +435,19 @@ class Panel(Container):
             self._last_rendered_dimensions = current_dimensions
             return True
         
+        # Check if labels have changed
+        current_labels_hash = hash((
+            tuple(self.left_labels),
+            tuple(self.right_labels),
+            tuple(self.center_labels),
+            tuple(self.bottom_left_labels),
+            tuple(self.bottom_right_labels),
+            tuple(self.bottom_center_labels)
+        ))
+        if current_labels_hash != self._last_labels_hash:
+            self._last_labels_hash = current_labels_hash
+            return True
+        
         # Check if content has changed
         current_hash = hash(tuple(self.content_lines))
         if current_hash != self._last_content_hash:
@@ -485,44 +513,94 @@ class Panel(Container):
         # Format labels
         left_text = self._format_labels(self.left_labels, h)
         right_text = self._format_labels(self.right_labels, h)
+        center_text = self._format_labels(self.center_labels, h)
         
         left_len = visible_length(left_text)
         right_len = visible_length(right_text)
-        total_label_len = left_len + right_len
+        center_len = visible_length(center_text)
+        total_label_len = left_len + right_len + center_len
         
         # Handle truncation if labels are too long
         if total_label_len >= available_width:
-            if left_text and right_text:
-                max_left = min(left_len, available_width - 1)
-                if left_len > max_left:
-                    left_text = left_text[:max_left]
-                    left_len = max_left
-                remaining = available_width - left_len
-                if right_len > remaining:
-                    right_text = right_text[:remaining]
-            elif left_text and left_len > available_width:
-                left_text = left_text[:available_width]
-            elif right_text and right_len > available_width:
-                right_text = right_text[:available_width]
+            # Priority: left, right, then center
+            if left_text and left_len > available_width // 3:
+                left_text = left_text[:available_width // 3]
+                left_len = visible_length(left_text)
+            if right_text and right_len > available_width // 3:
+                right_text = right_text[:available_width // 3]
+                right_len = visible_length(right_text)
+            remaining = available_width - left_len - right_len
+            if center_text and center_len > remaining:
+                center_text = center_text[:remaining]
+                center_len = visible_length(center_text)
         
-        # Build border string
-        if not left_text and not right_text:
+        # Build border string with left, center, and right labels
+        if not left_text and not right_text and not center_text:
             # No labels - just horizontal line
             top_border = tl + h * available_width + tr
             return ANSIColors.BOLD + self._apply_border_color(top_border) + ANSIColors.RESET
         
-        # Labels exist - pack left and right with horizontal lines in between
-        middle_space = max(0, available_width - left_len - right_len)
-        top_border = tl + left_text + h * middle_space + right_text + tr
+        # Calculate spacing: center should be truly centered in the full width
+        if center_text:
+            # Center label exists: calculate center position in full width
+            center_start = (available_width - center_len) // 2
+            
+            # Calculate how much space we have on each side of center
+            # Left side: from start to center_start
+            # Right side: from center_end to end
+            center_end = center_start + center_len
+            
+            # Left labels go on the left, but can't overlap center
+            left_space_available = max(0, center_start - left_len)
+            # Right labels go on the right, but can't overlap center
+            right_space_available = max(0, available_width - center_end - right_len)
+            
+            # Build: [left labels][space][center][space][right labels]
+            # If left/right would overlap center, truncate them
+            if left_len > center_start:
+                # Left overlaps center, truncate left
+                left_text = left_text[:max(0, center_start - 1)]
+                left_len = visible_length(left_text)
+            
+            if right_len > (available_width - center_end):
+                # Right overlaps center, truncate right
+                right_text = right_text[:max(0, available_width - center_end - 1)]
+                right_len = visible_length(right_text)
+            
+            # Recalculate positions
+            center_start = (available_width - center_len) // 2
+            center_end = center_start + center_len
+            
+            # Calculate spaces
+            left_to_center_space = max(0, center_start - left_len)
+            center_to_right_space = max(0, available_width - center_end - right_len)
+            
+            top_border = tl + left_text + h * left_to_center_space + center_text + h * center_to_right_space + right_text + tr
+        else:
+            # No center label: left and right with space in between
+            middle_space = max(0, available_width - left_len - right_len)
+            top_border = tl + left_text + h * middle_space + right_text + tr
         
         # Apply color to border parts only
         colored_tl = self._apply_border_color(tl)
         colored_tr = self._apply_border_color(tr)
         colored_left = self._colorize_border_only(left_text)
         colored_right = self._colorize_border_only(right_text)
-        colored_middle = self._apply_border_color(h * middle_space) if middle_space > 0 else ""
+        colored_center = self._colorize_border_only(center_text) if center_text else ""
         
-        return ANSIColors.BOLD + colored_tl + colored_left + colored_middle + colored_right + colored_tr + ANSIColors.RESET
+        # Rebuild with colored parts
+        if center_text:
+            center_start = (available_width - center_len) // 2
+            center_end = center_start + center_len
+            left_to_center_space = max(0, center_start - left_len)
+            center_to_right_space = max(0, available_width - center_end - right_len)
+            colored_middle_left = self._apply_border_color(h * left_to_center_space) if left_to_center_space > 0 else ""
+            colored_middle_right = self._apply_border_color(h * center_to_right_space) if center_to_right_space > 0 else ""
+            return ANSIColors.BOLD + colored_tl + colored_left + colored_middle_left + colored_center + colored_middle_right + colored_right + colored_tr + ANSIColors.RESET
+        else:
+            middle_space = max(0, available_width - left_len - right_len)
+            colored_middle = self._apply_border_color(h * middle_space) if middle_space > 0 else ""
+            return ANSIColors.BOLD + colored_tl + colored_left + colored_middle + colored_right + colored_tr + ANSIColors.RESET
     
     """Build content area lines with borders."""
     def _build_content_lines(self) -> List[str]:
@@ -553,44 +631,94 @@ class Panel(Container):
         # Format labels
         left_text = self._format_labels(self.bottom_left_labels, h, is_bottom=True)
         right_text = self._format_labels(self.bottom_right_labels, h, is_bottom=True)
+        center_text = self._format_labels(self.bottom_center_labels, h, is_bottom=True)
         
         left_len = visible_length(left_text)
         right_len = visible_length(right_text)
-        total_label_len = left_len + right_len
+        center_len = visible_length(center_text)
+        total_label_len = left_len + right_len + center_len
         
         # Handle truncation if labels are too long
         if total_label_len >= available_width:
-            if left_text and right_text:
-                max_left = min(left_len, available_width - 1)
-                if left_len > max_left:
-                    left_text = left_text[:max_left]
-                    left_len = max_left
-                remaining = available_width - left_len
-                if right_len > remaining:
-                    right_text = right_text[:remaining]
-            elif left_text and left_len > available_width:
-                left_text = left_text[:available_width]
-            elif right_text and right_len > available_width:
-                right_text = right_text[:available_width]
+            # Priority: left, right, then center
+            if left_text and left_len > available_width // 3:
+                left_text = left_text[:available_width // 3]
+                left_len = visible_length(left_text)
+            if right_text and right_len > available_width // 3:
+                right_text = right_text[:available_width // 3]
+                right_len = visible_length(right_text)
+            remaining = available_width - left_len - right_len
+            if center_text and center_len > remaining:
+                center_text = center_text[:remaining]
+                center_len = visible_length(center_text)
         
-        # Build border string
-        if not left_text and not right_text:
+        # Build border string with left, center, and right labels
+        if not left_text and not right_text and not center_text:
             # No labels - just horizontal line
             bottom_border = bl + h * available_width + br
             return ANSIColors.BOLD + self._apply_border_color(bottom_border) + ANSIColors.RESET
         
-        # Labels exist - pack left and right with horizontal lines in between
-        middle_space = max(0, available_width - left_len - right_len)
-        bottom_border = bl + left_text + h * middle_space + right_text + br
+        # Calculate spacing: center should be truly centered in the full width
+        if center_text:
+            # Center label exists: calculate center position in full width
+            center_start = (available_width - center_len) // 2
+            
+            # Calculate how much space we have on each side of center
+            # Left side: from start to center_start
+            # Right side: from center_end to end
+            center_end = center_start + center_len
+            
+            # Left labels go on the left, but can't overlap center
+            left_space_available = max(0, center_start - left_len)
+            # Right labels go on the right, but can't overlap center
+            right_space_available = max(0, available_width - center_end - right_len)
+            
+            # Build: [left labels][space][center][space][right labels]
+            # If left/right would overlap center, truncate them
+            if left_len > center_start:
+                # Left overlaps center, truncate left
+                left_text = left_text[:max(0, center_start - 1)]
+                left_len = visible_length(left_text)
+            
+            if right_len > (available_width - center_end):
+                # Right overlaps center, truncate right
+                right_text = right_text[:max(0, available_width - center_end - 1)]
+                right_len = visible_length(right_text)
+            
+            # Recalculate positions
+            center_start = (available_width - center_len) // 2
+            center_end = center_start + center_len
+            
+            # Calculate spaces
+            left_to_center_space = max(0, center_start - left_len)
+            center_to_right_space = max(0, available_width - center_end - right_len)
+            
+            bottom_border = bl + left_text + h * left_to_center_space + center_text + h * center_to_right_space + right_text + br
+        else:
+            # No center label: left and right with space in between
+            middle_space = max(0, available_width - left_len - right_len)
+            bottom_border = bl + left_text + h * middle_space + right_text + br
         
         # Apply color to border parts only
         colored_bl = self._apply_border_color(bl)
         colored_br = self._apply_border_color(br)
         colored_left = self._colorize_border_only(left_text)
         colored_right = self._colorize_border_only(right_text)
-        colored_middle = self._apply_border_color(h * middle_space) if middle_space > 0 else ""
+        colored_center = self._colorize_border_only(center_text) if center_text else ""
         
-        return ANSIColors.BOLD + colored_bl + colored_left + colored_middle + colored_right + colored_br + ANSIColors.RESET
+        # Rebuild with colored parts
+        if center_text:
+            center_start = (available_width - center_len) // 2
+            center_end = center_start + center_len
+            left_to_center_space = max(0, center_start - left_len)
+            center_to_right_space = max(0, available_width - center_end - right_len)
+            colored_middle_left = self._apply_border_color(h * left_to_center_space) if left_to_center_space > 0 else ""
+            colored_middle_right = self._apply_border_color(h * center_to_right_space) if center_to_right_space > 0 else ""
+            return ANSIColors.BOLD + colored_bl + colored_left + colored_middle_left + colored_center + colored_middle_right + colored_right + colored_br + ANSIColors.RESET
+        else:
+            middle_space = max(0, available_width - left_len - right_len)
+            colored_middle = self._apply_border_color(h * middle_space) if middle_space > 0 else ""
+            return ANSIColors.BOLD + colored_bl + colored_left + colored_middle + colored_right + colored_br + ANSIColors.RESET
     
     """
     Render the panel as a list of ANSI strings.
