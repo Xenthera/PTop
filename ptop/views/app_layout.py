@@ -27,14 +27,16 @@ class AppLayout:
     - Panel update coordination
     """
     
-    def __init__(self, renderer: ANSIRendererBase):
+    def __init__(self, renderer: ANSIRendererBase, debug: bool = False):
         """
         Initialize the application layout.
         
         Args:
             renderer: The ANSI renderer instance
+            debug: If True, skip battery detection (for mock data testing)
         """
         self.renderer = renderer
+        self.debug = debug
         
         # Create root layout structure
         self.root_layout = VLayout(margin=0, spacing=1)
@@ -48,7 +50,7 @@ class AppLayout:
         # Create panel controllers
         self.history_panel = HistoryPanel(self.renderer)
         self.processor_panel = ProcessorPanel(self.renderer)
-        self.system_info_panel = SystemInfoPanel(self.renderer)
+        self.system_info_panel = SystemInfoPanel(self.renderer, debug=debug)
         
         # Create blank panels for bottom row (with borders, no content)
         self.blank_panel1 = self.renderer.create_panel('blank_panel1')

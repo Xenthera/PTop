@@ -501,20 +501,226 @@ class SystemInfoCollector(BaseCollector):
         
         return None
     
-    def _get_package_count(self) -> Optional[int]:
+    def _get_package_count(self) -> Optional[str]:
         """
-        Get package count (Linux/BSD only).
+        Get package count with package manager name.
         
-        Attempts to count packages from package manager databases.
-        This is optional and may not work on all systems.
+        Detects package managers and counts installed packages:
+        - Linux: pacman (Arch), apt (Debian/Ubuntu), rpm/dnf/yum/zypper (RPM-based), portage (Gentoo), apk (Alpine)
+        - macOS: brew (Homebrew)
+        - Windows: winget, chocolatey, scoop
+        - FreeBSD: pkg, ports
+        - OpenBSD: pkg_add
+        - NetBSD: pkgin, pkgsrc
+        
+        Returns formatted string like "123 (pacman)" or None if unavailable.
         """
         system = platform.system()
-        if system == 'Windows' or system == 'Darwin':
+        import subprocess
+        import shutil
+        
+        # macOS: Try Homebrew
+        if system == 'Darwin':
+            try:
+                # Check if brew is available by checking common paths
+                brew_paths = [
+                    '/opt/homebrew/bin/brew',  # Apple Silicon
+                    '/usr/local/bin/brew',     # Intel
+                    os.path.expanduser('~/.homebrew/bin/brew'),  # User install
+                ]
+                brew_cmd = None
+                for path in brew_paths:
+                    if os.path.exists(path):
+                        brew_cmd = path
+                        break
+                
+                # Also try to find brew in PATH
+                if not brew_cmd:
+                    brew_cmd = shutil.which('brew')
+                
+                if brew_cmd:
+                    try:
+                        result = subprocess.run(
+                            [brew_cmd, 'list', '--formula'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            packages = [line for line in result.stdout.strip().split('\n') if line.strip()]
+                            count = len(packages)
+                            if count > 0:
+                                return f"{count} (brew)"
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+            except Exception:
+                pass
+            return None
+        
+        # Windows: Try winget, chocolatey, scoop
+        if system == 'Windows':
+            try:
+                # Try winget (Windows Package Manager)
+                winget_cmd = shutil.which('winget')
+                if winget_cmd:
+                    try:
+                        result = subprocess.run(
+                            [winget_cmd, 'list'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            # Count non-empty lines (skip header)
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Name')]
+                            count = len(lines)
+                            if count > 0:
+                                return f"{count} (winget)"
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+                
+                # Try chocolatey
+                choco_cmd = shutil.which('choco')
+                if choco_cmd:
+                    try:
+                        result = subprocess.run(
+                            [choco_cmd, 'list', '--local-only'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Chocolatey')]
+                            count = len(lines)
+                            if count > 0:
+                                return f"{count} (chocolatey)"
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+                
+                # Try scoop
+                scoop_cmd = shutil.which('scoop')
+                if scoop_cmd:
+                    try:
+                        result = subprocess.run(
+                            [scoop_cmd, 'list'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Name')]
+                            count = len(lines)
+                            if count > 0:
+                                return f"{count} (scoop)"
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+            except Exception:
+                pass
+            return None
+        
+        # FreeBSD: Try pkg and ports
+        if system == 'FreeBSD':
+            try:
+                # Try pkg (binary packages)
+                pkg_cmd = shutil.which('pkg')
+                if pkg_cmd:
+                    try:
+                        result = subprocess.run(
+                            [pkg_cmd, 'info'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip()]
+                            count = len(lines)
+                            if count > 0:
+                                return f"{count} (pkg)"
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+                
+                # Try ports (source packages)
+                ports_db = '/usr/ports'
+                if os.path.isdir(ports_db):
+                    # Count installed ports from /var/db/pkg
+                    pkg_db = '/var/db/pkg'
+                    if os.path.isdir(pkg_db):
+                        count = len([d for d in os.listdir(pkg_db) if os.path.isdir(os.path.join(pkg_db, d))])
+                        if count > 0:
+                            return f"{count} (ports)"
+            except Exception:
+                pass
+            return None
+        
+        # OpenBSD: Try pkg_add
+        if system == 'OpenBSD':
+            try:
+                pkg_info_cmd = shutil.which('pkg_info')
+                if pkg_info_cmd:
+                    try:
+                        result = subprocess.run(
+                            [pkg_info_cmd],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip()]
+                            count = len(lines)
+                            if count > 0:
+                                return f"{count} (pkg_add)"
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+            except Exception:
+                pass
+            return None
+        
+        # NetBSD: Try pkgin and pkgsrc
+        if system == 'NetBSD':
+            try:
+                # Try pkgin (binary packages)
+                pkgin_cmd = shutil.which('pkgin')
+                if pkgin_cmd:
+                    try:
+                        result = subprocess.run(
+                            [pkgin_cmd, 'list'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Reading')]
+                            count = len(lines)
+                            if count > 0:
+                                return f"{count} (pkgin)"
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+                
+                # Try pkgsrc (source packages)
+                pkgsrc_db = '/usr/pkgsrc'
+                if os.path.isdir(pkgsrc_db):
+                    pkg_db = '/var/db/pkg'
+                    if os.path.isdir(pkg_db):
+                        count = len([d for d in os.listdir(pkg_db) if os.path.isdir(os.path.join(pkg_db, d))])
+                        if count > 0:
+                            return f"{count} (pkgsrc)"
+            except Exception:
+                pass
             return None
         
         # Linux: Try different package managers
         try:
-            # Try dpkg (Debian/Ubuntu)
+            # Try pacman (Arch) - highest priority for Arch-based systems
+            try:
+                pacman_db = '/var/lib/pacman/local'
+                if os.path.isdir(pacman_db):
+                    count = len([d for d in os.listdir(pacman_db) if os.path.isdir(os.path.join(pacman_db, d))])
+                    if count > 0:
+                        return f"{count} (pacman)"
+            except (IOError, OSError):
+                pass
+            
+            # Try dpkg/apt (Debian/Ubuntu)
             try:
                 dpkg_db = '/var/lib/dpkg/status'
                 if os.path.exists(dpkg_db):
@@ -523,28 +729,96 @@ class SystemInfoCollector(BaseCollector):
                         for line in f:
                             if line.startswith('Package:'):
                                 count += 1
-                    return count if count > 0 else None
+                    if count > 0:
+                        return f"{count} (apt)"
             except (IOError, OSError):
                 pass
             
-            # Try rpm (RedHat/Fedora)
+            # Try apk (Alpine)
             try:
-                rpm_db = '/var/lib/rpm/Packages'
-                if os.path.exists(rpm_db):
-                    # RPM database is binary, hard to count without rpm command
-                    # Skip for now
+                apk_db = '/lib/apk/db/installed'
+                if os.path.exists(apk_db):
+                    count = 0
+                    with open(apk_db, 'r') as f:
+                        for line in f:
+                            if line.startswith('P:'):
+                                count += 1
+                    if count > 0:
+                        return f"{count} (apk)"
+            except (IOError, OSError):
+                pass
+            
+            # Try dnf (Fedora) - preferred over rpm/yum
+            dnf_cmd = shutil.which('dnf')
+            if dnf_cmd:
+                try:
+                    result = subprocess.run(
+                        [dnf_cmd, 'list', 'installed'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Installed')]
+                        count = len(lines)
+                        if count > 0:
+                            return f"{count} (dnf)"
+                except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
                     pass
-            except Exception:
-                pass
             
-            # Try pacman (Arch)
-            try:
-                pacman_db = '/var/lib/pacman/local'
-                if os.path.isdir(pacman_db):
-                    count = len([d for d in os.listdir(pacman_db) if os.path.isdir(os.path.join(pacman_db, d))])
-                    return count if count > 0 else None
-            except (IOError, OSError):
-                pass
+            # Try yum (older Fedora/CentOS)
+            yum_cmd = shutil.which('yum')
+            if yum_cmd:
+                try:
+                    result = subprocess.run(
+                        [yum_cmd, 'list', 'installed'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Installed')]
+                        count = len(lines)
+                        if count > 0:
+                            return f"{count} (yum)"
+                except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                    pass
+            
+            # Try rpm (RedHat/Fedora) - fallback if dnf/yum not available
+            rpm_cmd = shutil.which('rpm')
+            if rpm_cmd:
+                try:
+                    result = subprocess.run(
+                        [rpm_cmd, '-qa'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        packages = [line for line in result.stdout.strip().split('\n') if line.strip()]
+                        count = len(packages)
+                        if count > 0:
+                            return f"{count} (rpm)"
+                except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                    pass
+            
+            # Try zypper (openSUSE)
+            zypper_cmd = shutil.which('zypper')
+            if zypper_cmd:
+                try:
+                    result = subprocess.run(
+                        [zypper_cmd, 'search', '-i'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        lines = [line for line in result.stdout.strip().split('\n') if '|' in line and not line.startswith('S')]
+                        count = len(lines)
+                        if count > 0:
+                            return f"{count} (zypper)"
+                except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                    pass
             
             # Try portage (Gentoo) - count categories
             try:
@@ -555,7 +829,8 @@ class SystemInfoCollector(BaseCollector):
                         cat_path = os.path.join(portage_db, cat)
                         if os.path.isdir(cat_path):
                             count += len([pkg for pkg in os.listdir(cat_path) if os.path.isdir(os.path.join(cat_path, pkg))])
-                    return count if count > 0 else None
+                    if count > 0:
+                        return f"{count} (portage)"
             except (IOError, OSError):
                 pass
         except Exception:
@@ -765,7 +1040,7 @@ class SystemInfoCollector(BaseCollector):
             - shell: Default shell (None if unknown)
             - de_wm: Desktop environment/Window manager (None if unknown)
             - terminal: Terminal emulator (None if unknown)
-            - packages: Package count (None if unknown)
+            - packages: Package count with manager name, e.g., "123 (pacman)" or "456 (apt)" or "789 (brew)" (None if unknown)
             - resolution: Display resolution (None if unknown)
             - local_ip: Local IP address (None if unknown)
             - display_server: Display server Wayland/X11 (None if unknown)

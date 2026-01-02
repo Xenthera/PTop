@@ -19,7 +19,7 @@ lines for efficiency.
 
 from typing import Dict, Any, Optional
 from ..ui.ansi_renderer import ANSIRendererBase
-from ..ui.colors import ANSIColors
+from ..ui.colors import ANSIColors, get_gradient_color
 
 
 class SystemInfoPanel:
@@ -45,14 +45,16 @@ class SystemInfoPanel:
     or explicit force redraw to handle text re-wrapping.
     """
     
-    def __init__(self, renderer: ANSIRendererBase):
+    def __init__(self, renderer: ANSIRendererBase, debug: bool = False):
         """
         Initialize the system information panel.
         
         Args:
             renderer: The ANSI renderer instance
+            debug: If True, skip battery detection (for mock data testing)
         """
         self.renderer = renderer
+        self.debug = debug
         self.panel = None
         self._initialized = False
         self._last_data_hash = None
@@ -74,28 +76,46 @@ class SystemInfoPanel:
         # This panel doesn't have nested layouts, so nothing to update
         pass
     
-    def _format_memory(self, used_bytes: int, total_bytes: int) -> str:
+    def _format_memory(self, used_bytes: int, total_bytes: int, apply_color: bool = False) -> str:
         """
         Format memory used/total into human-readable string.
         
         Args:
             used_bytes: Memory used in bytes
             total_bytes: Total memory in bytes
+            apply_color: If True, apply CPU gradient color based on percentage
             
         Returns:
-            Formatted string (e.g., "8.0 / 16.0 GiB", "512 / 1024 MiB")
+            Formatted string (e.g., "8.0/16.0 (GiB)", "512/1024 (MiB)")
         """
         if total_bytes == 0:
             return "Unknown"
+        
+        # Calculate percentage for color gradient
+        percent = (used_bytes / total_bytes * 100.0) if total_bytes > 0 else 0.0
         
         # Format both used and total in appropriate unit
         for unit, suffix in [(1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB")]:
             if total_bytes >= unit:
                 used_value = used_bytes / unit
                 total_value = total_bytes / unit
-                return f"{used_value:.1f} / {total_value:.1f} {suffix}"
+                formatted = f"{used_value:.1f}/{total_value:.1f} ({suffix})"
+                
+                # Apply CPU gradient color if requested
+                if apply_color:
+                    cpu_colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
+                    color_code = get_gradient_color(cpu_colors, percent, self.renderer._truecolor_support)
+                    return f"{color_code}{formatted}{ANSIColors.RESET}"
+                else:
+                    return formatted
         
-        return f"{used_bytes} / {total_bytes} B"
+        formatted = f"{used_bytes}/{total_bytes} (B)"
+        if apply_color:
+            cpu_colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
+            color_code = get_gradient_color(cpu_colors, percent, self.renderer._truecolor_support)
+            return f"{color_code}{formatted}{ANSIColors.RESET}"
+        else:
+            return formatted
     
     def _format_uptime(self, seconds: Optional[float]) -> str:
         """
@@ -143,7 +163,7 @@ class SystemInfoPanel:
         else:
             return f"{int(mhz)} MHz"
     
-    def _render_content(self, data: Dict[str, Any], cpu_name: Optional[str] = None, memory_used: int = 0, memory_total: int = 0, uptime: Optional[float] = None, disk_used: int = 0, disk_total: int = 0, process_count: int = 0, battery_percent: Optional[float] = None) -> None:
+    def _render_content(self, data: Dict[str, Any], cpu_name: Optional[str] = None, memory_used: int = 0, memory_total: int = 0, uptime: Optional[float] = None, disk_used: int = 0, disk_total: int = 0, process_count: int = 0, battery_percent: Optional[float] = None, battery_power_plugged: Optional[bool] = None) -> None:
         """
         Render panel content from system info data.
         
@@ -157,6 +177,7 @@ class SystemInfoPanel:
             disk_total: Total disk space in bytes (for live updates)
             process_count: Current number of running processes (for live updates)
             battery_percent: Battery percentage if available (for live updates)
+            battery_power_plugged: True if AC power is connected, False if on battery, None if no battery (for live updates)
         """
         self.panel.clear()
         
@@ -225,9 +246,9 @@ class SystemInfoPanel:
         hostname_line = f"{label_color}Host{reset}: {value_color}{hostname}{reset}"
         lines.append(hostname_line)
         
-        # Memory (used/total, updates live)
-        memory_str = self._format_memory(memory_used, memory_total)
-        memory_line = f"{label_color}Memory{reset}: {value_color}{memory_str}{reset}"
+        # Memory (used/total, updates live) - formatted as x/x (unit) with CPU gradient color
+        memory_str = self._format_memory(memory_used, memory_total, apply_color=True)
+        memory_line = f"{label_color}Memory{reset}: {memory_str}"
         lines.append(memory_line)
         
         # Shell (if available)
@@ -250,10 +271,10 @@ class SystemInfoPanel:
             packages_line = f"{label_color}Packages{reset}: {value_color}{packages}{reset}"
             lines.append(packages_line)
         
-        # Disk usage (used/total, updates live)
+        # Disk usage (used/total, updates live) - formatted as x/x (unit) with CPU gradient color
         if disk_total > 0:
-            disk_str = self._format_memory(disk_used, disk_total)
-            disk_line = f"{label_color}Disk{reset}: {value_color}{disk_str}{reset}"
+            disk_str = self._format_memory(disk_used, disk_total, apply_color=True)
+            disk_line = f"{label_color}Disk{reset}: {disk_str}"
             lines.append(disk_line)
         
         # Resolution (if available)
@@ -281,10 +302,28 @@ class SystemInfoPanel:
             process_line = f"{label_color}Processes{reset}: {value_color}{process_count}{reset}"
             lines.append(process_line)
         
-        # Battery (if available, updates live)
+        # Battery (if available, updates live) - percentage uses gradient, status words are colored in parens
         if battery_percent is not None:
-            battery_str = f"{battery_percent:.0f}%"
-            battery_line = f"{label_color}Battery{reset}: {value_color}{battery_str}{reset}"
+            # Percentage uses gradient color based on battery level
+            cpu_colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
+            percent_color_code = get_gradient_color(cpu_colors, battery_percent, self.renderer._truecolor_support)
+            percent_str = f"{battery_percent:.0f}%"
+            
+            # Build the full battery string with separate colors for percentage and status
+            if battery_power_plugged is not None:
+                if battery_power_plugged:
+                    status_word = "charging"
+                    status_color = ANSIColors.BRIGHT_GREEN
+                else:
+                    status_word = "draining"
+                    status_color = ANSIColors.BRIGHT_RED
+                # Parentheses are white, status word is colored
+                battery_str = f"{percent_color_code}{percent_str}{ANSIColors.RESET} {value_color}({status_color}{status_word}{value_color}){ANSIColors.RESET}"
+            else:
+                # If power status is unknown, just show percentage with gradient
+                battery_str = f"{percent_color_code}{percent_str}{ANSIColors.RESET}"
+            
+            battery_line = f"{label_color}Battery{reset}: {battery_str}"
             lines.append(battery_line)
         
         # Add all lines to panel
@@ -348,12 +387,19 @@ class SystemInfoPanel:
                 process_count = 0
             
             # Get battery status (live data, if available)
-            try:
-                battery = psutil.sensors_battery()
-                battery_percent = battery.percent if battery else None
-            except (AttributeError, Exception):
-                # psutil.sensors_battery() might not be available on all systems
-                battery_percent = None
+            # Skip battery detection in debug mode to test "no battery" scenario
+            battery_percent = None
+            battery_power_plugged = None
+            if not self.debug:
+                try:
+                    battery = psutil.sensors_battery()
+                    if battery is not None:
+                        battery_percent = battery.percent
+                        battery_power_plugged = battery.power_plugged
+                except (AttributeError, Exception):
+                    # psutil.sensors_battery() might not be available on all systems
+                    battery_percent = None
+                    battery_power_plugged = None
         except Exception:
             # Fallback to static data if psutil fails
             memory_used = 0
@@ -363,6 +409,7 @@ class SystemInfoPanel:
             disk_total = 0
             process_count = 0
             battery_percent = None
+            battery_power_plugged = None
         
         # Always update since we have live data (memory, uptime, disk, processes, battery)
         # The double-buffering renderer will efficiently only update changed lines
@@ -382,7 +429,8 @@ class SystemInfoPanel:
             disk_used=disk_used,
             disk_total=disk_total,
             process_count=process_count,
-            battery_percent=battery_percent
+            battery_percent=battery_percent,
+            battery_power_plugged=battery_power_plugged
         )
         self._initialized = True
         self._last_data_hash = data_hash

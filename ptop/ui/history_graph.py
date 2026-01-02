@@ -755,7 +755,9 @@ class MultiLineGraph:
             
             graph_lines.append(''.join(line_parts) + ANSIColors.RESET)
         
-        # Add max value label to top left if enabled
+        # Add max value label if enabled
+        # For normal graphs (top_to_bottom=False): max is at top (first line)
+        # For upside-down graphs (top_to_bottom=True): max is at bottom (last line)
         if self.show_max_label and graph_lines:
             # Format the max value (e.g., "100%", "75.5°C", etc.)
             # Determine if we should show as percentage or raw value
@@ -770,22 +772,24 @@ class MultiLineGraph:
             label_color = ANSIColors.BRIGHT_BLACK
             label = label_color + label_text + ANSIColors.RESET
             
-            # Overlay the label on the first line (top line) in the top left
-            # Replace the first N visible characters with the label
-            first_line = graph_lines[0]
+            # Choose the correct line based on graph orientation
+            # For normal graphs: max is at top (first line)
+            # For upside-down graphs: max is at bottom (last line)
+            target_line_idx = 0 if not self.top_to_bottom else -1
+            target_line = graph_lines[target_line_idx]
             label_length = len(label_text)
             
-            # Extract the color code from the first line (if any) to preserve it
-            # The first line starts with a color code, then braille chars, then RESET at the end
+            # Extract the color code from the target line (if any) to preserve it
+            # The target line starts with a color code, then braille chars, then RESET at the end
             # We want to replace the first few braille characters with our label
             # Find where the actual content (braille chars) starts
             color_code = ""
             content_start = 0
-            if first_line.startswith('\033['):
+            if target_line.startswith('\033['):
                 # Extract the color code
-                end_idx = first_line.find('m')
+                end_idx = target_line.find('m')
                 if end_idx != -1:
-                    color_code = first_line[:end_idx + 1]
+                    color_code = target_line[:end_idx + 1]
                     content_start = end_idx + 1
             
             # Replace the first label_length characters of visible content with the label
@@ -795,13 +799,13 @@ class MultiLineGraph:
             result_parts = [color_code]  # Start with the original color code
             
             # Skip the first label_length visible characters (these will be replaced by the label)
-            while i < len(first_line) and visible_chars_skipped < label_length:
-                if first_line[i] == '\033' and i + 1 < len(first_line) and first_line[i + 1] == '[':
+            while i < len(target_line) and visible_chars_skipped < label_length:
+                if target_line[i] == '\033' and i + 1 < len(target_line) and target_line[i + 1] == '[':
                     # Skip ANSI escape sequence
                     j = i + 2
-                    while j < len(first_line) and first_line[j] not in 'mH':
+                    while j < len(target_line) and target_line[j] not in 'mH':
                         j += 1
-                    if j < len(first_line):
+                    if j < len(target_line):
                         j += 1
                     i = j
                 else:
@@ -812,12 +816,14 @@ class MultiLineGraph:
             # Now insert the label and continue with the rest of the line
             result_parts.append(label)
             # Add the rest of the line (from position i onwards)
-            if i < len(first_line):
-                result_parts.append(first_line[i:])
+            if i < len(target_line):
+                result_parts.append(target_line[i:])
             
-            graph_lines[0] = ''.join(result_parts)
+            graph_lines[target_line_idx] = ''.join(result_parts)
         
-        # Add min value label to bottom left if enabled
+        # Add min value label if enabled
+        # For normal graphs (top_to_bottom=False): min is at bottom (last line)
+        # For upside-down graphs (top_to_bottom=True): min is at top (first line)
         if self.show_min_label and graph_lines:
             # Format the min value (e.g., "0%", "30°C", etc.)
             # Determine if we should show as percentage or raw value
@@ -832,19 +838,21 @@ class MultiLineGraph:
             label_color = ANSIColors.BRIGHT_BLACK
             label = label_color + label_text + ANSIColors.RESET
             
-            # Overlay the label on the last line (bottom line) in the bottom left
-            # Replace the first N visible characters with the label
-            last_line = graph_lines[-1]
+            # Choose the correct line based on graph orientation
+            # For normal graphs: min is at bottom (last line)
+            # For upside-down graphs: min is at top (first line)
+            target_line_idx = -1 if not self.top_to_bottom else 0
+            target_line = graph_lines[target_line_idx]
             label_length = len(label_text)
             
-            # Extract the color code from the last line (if any) to preserve it
+            # Extract the color code from the target line (if any) to preserve it
             color_code = ""
             content_start = 0
-            if last_line.startswith('\033['):
+            if target_line.startswith('\033['):
                 # Extract the color code
-                end_idx = last_line.find('m')
+                end_idx = target_line.find('m')
                 if end_idx != -1:
-                    color_code = last_line[:end_idx + 1]
+                    color_code = target_line[:end_idx + 1]
                     content_start = end_idx + 1
             
             # Replace the first label_length characters of visible content with the label
@@ -854,13 +862,13 @@ class MultiLineGraph:
             result_parts = [color_code]  # Start with the original color code
             
             # Skip the first label_length visible characters (these will be replaced by the label)
-            while i < len(last_line) and visible_chars_skipped < label_length:
-                if last_line[i] == '\033' and i + 1 < len(last_line) and last_line[i + 1] == '[':
+            while i < len(target_line) and visible_chars_skipped < label_length:
+                if target_line[i] == '\033' and i + 1 < len(target_line) and target_line[i + 1] == '[':
                     # Skip ANSI escape sequence
                     j = i + 2
-                    while j < len(last_line) and last_line[j] not in 'mH':
+                    while j < len(target_line) and target_line[j] not in 'mH':
                         j += 1
-                    if j < len(last_line):
+                    if j < len(target_line):
                         j += 1
                     i = j
                 else:
@@ -871,10 +879,10 @@ class MultiLineGraph:
             # Now insert the label and continue with the rest of the line
             result_parts.append(label)
             # Add the rest of the line (from position i onwards)
-            if i < len(last_line):
-                result_parts.append(last_line[i:])
+            if i < len(target_line):
+                result_parts.append(target_line[i:])
             
-            graph_lines[-1] = ''.join(result_parts)
+            graph_lines[target_line_idx] = ''.join(result_parts)
         
         return '\n'.join(graph_lines)
     

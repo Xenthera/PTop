@@ -49,7 +49,7 @@ class PTopApp:
         self.renderer = ANSIRendererBase()
         
         # Initialize UI layout
-        self.layout = AppLayout(self.renderer)
+        self.layout = AppLayout(self.renderer, debug=self.debug)
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -70,8 +70,8 @@ class PTopApp:
             from ..mock_collectors.mock_gpu import MockGPUCollector
             from ..mock_collectors.mock_system_info import MockSystemInfoCollector
             
-            self.collectors.append(MockCPUCollector(num_cores=32))
-            self.collectors.append(MockGPUCollector(num_gpus=1))
+            self.collectors.append(MockCPUCollector(num_cores=5))
+            self.collectors.append(MockGPUCollector(num_gpus=3))
             self.collectors.append(MockSystemInfoCollector())
         else:
             # Use real collectors
