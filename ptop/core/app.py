@@ -170,14 +170,11 @@ class PTopApp:
                     cols, rows = current_terminal_size
                     self.layout.update_layout(cols, rows)
                 
-                # Move cursor to top
-                sys.stdout.write('\033[H')
-                
-                # Render all panels (layouts will be handled automatically)
+                # Render all panels using double buffering (layouts will be handled automatically)
+                # Double buffering eliminates flicker by building the entire frame in memory,
+                # diffing it against the previous frame, and writing only changed rows atomically.
                 # Force redraw on resize to ensure everything is recalculated
                 self.renderer.render_all_panels(force_redraw=resize_occurred)
-                
-                sys.stdout.flush()
                 
                 # Wait for next update interval
                 time.sleep(self.update_interval)

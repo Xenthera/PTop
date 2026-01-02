@@ -177,6 +177,53 @@ class Container:
             renderer._render_container(child, force_redraw=force_redraw,
                                       clip_row=effective_clip_row, clip_col=effective_clip_col,
                                       clip_width=effective_clip_width, clip_height=effective_clip_height)
+    
+    """Render children into a frame buffer (for double buffering)."""
+    def render_children_to_buffer(self, renderer: 'ANSIRendererBase', buffer: List[str], 
+                                 force_redraw: bool = False,
+                                 clip_row: Optional[int] = None, clip_col: Optional[int] = None,
+                                 clip_width: Optional[int] = None, clip_height: Optional[int] = None) -> None:
+        content_row, content_col, content_width, content_height = self.get_content_area()
+        
+        # Calculate effective clipping region (intersection of content area and external clip)
+        if clip_row is not None and clip_col is not None and clip_width is not None and clip_height is not None:
+            # Intersect external clip with content area
+            clip_left = max(clip_col, content_col)
+            clip_top = max(clip_row, content_row)
+            clip_right = min(clip_col + clip_width - 1, content_col + content_width - 1)
+            clip_bottom = min(clip_row + clip_height - 1, content_row + content_height - 1)
+            
+            if clip_left > clip_right or clip_top > clip_bottom:
+                return  # No intersection, nothing to render
+            
+            effective_clip_row = clip_top
+            effective_clip_col = clip_left
+            effective_clip_width = clip_right - clip_left + 1
+            effective_clip_height = clip_bottom - clip_top + 1
+        else:
+            # No external clipping, use content area
+            effective_clip_row = content_row
+            effective_clip_col = content_col
+            effective_clip_width = content_width
+            effective_clip_height = content_height
+        
+        # Sort children by z-order (lower z renders first)
+        sorted_children = sorted(self.children, key=lambda c: c.z)
+        
+        for child in sorted_children:
+            # Calculate child bounds
+            child_bottom = child.row + child.height - 1
+            child_right = child.col + child.width - 1
+            
+            # Skip if child is completely outside effective clipping region
+            if (child_bottom < effective_clip_row or child.row > effective_clip_row + effective_clip_height - 1 or
+                child_right < effective_clip_col or child.col > effective_clip_col + effective_clip_width - 1):
+                continue
+            
+            # Pass the effective clipping region to child
+            renderer._render_container_to_buffer(child, buffer, force_redraw=force_redraw,
+                                                clip_row=effective_clip_row, clip_col=effective_clip_col,
+                                                clip_width=effective_clip_width, clip_height=effective_clip_height)
 
 
 # ============================================================================
@@ -947,6 +994,9 @@ class ANSIRendererBase(BaseRenderer):
         self.containers: List[Container] = []  # Unified container registry
         self._initialized = False
         self._truecolor_support = _supports_truecolor()
+        # Double buffering: front_buffer is last frame drawn, back_buffer is frame being built
+        self.front_buffer: Optional[List[str]] = None  # Previous frame (row-indexed, 0-based)
+        self.back_buffer: Optional[List[str]] = None   # Current frame being built
     
     """Initialize the renderer and terminal."""
     def setup(self) -> None:
@@ -969,7 +1019,12 @@ class ANSIRendererBase(BaseRenderer):
     def get_terminal_size(self) -> Tuple[int, int]:
         try:
             cols, rows = shutil.get_terminal_size()
-            return (cols, rows)
+            new_size = (cols, rows)
+            # If terminal size changed, invalidate buffers to force full redraw
+            if new_size != self.terminal_size:
+                self.terminal_size = new_size
+                self.front_buffer = None  # Force full redraw on next frame
+            return new_size
         except (OSError, AttributeError, ValueError):
             return (DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS)
     
@@ -1078,8 +1133,18 @@ class ANSIRendererBase(BaseRenderer):
         
         return clipped
     
-    """Render all registered containers, sorted by z-order (lower z renders first)."""
-    def render_all_panels(self, force_redraw: bool = False) -> None:
+    """
+    Build a complete frame buffer by rendering all containers.
+    
+    Returns a List[str] where each string is a terminal row (padded to terminal width,
+    ends with RESET). Rows are 0-indexed internally but represent 1-based terminal rows.
+    """
+    def _build_frame_buffer(self, force_redraw: bool = False) -> List[str]:
+        cols, rows = self.terminal_size
+        
+        # Initialize back buffer as blank rows (each row padded to width, ends with RESET)
+        buffer = [' ' * cols + ANSIColors.RESET for _ in range(rows)]
+        
         # Sort containers by z-order (lower z renders first)
         sorted_containers = sorted(self.containers, key=lambda c: c.z)
         
@@ -1087,7 +1152,217 @@ class ANSIRendererBase(BaseRenderer):
         # Children will be rendered recursively
         for container in sorted_containers:
             if container.parent is None:
-                self._render_container(container, force_redraw=force_redraw)
+                self._render_container_to_buffer(container, buffer, force_redraw=force_redraw)
+        
+        return buffer
+    
+    """
+    Extract a substring from a string up to a specific visible position, preserving ANSI codes.
+    
+    Returns the portion of the string up to (but not including) the specified visible character position.
+    """
+    def _extract_up_to_visible_pos(self, text: str, visible_pos: int) -> str:
+        """Extract text up to visible_pos, preserving all ANSI codes."""
+        if visible_pos <= 0:
+            return ""
+        
+        visible_count = 0
+        i = 0
+        result = ""
+        while i < len(text) and visible_count < visible_pos:
+            if text[i] == '\033' and i + 1 < len(text) and text[i + 1] == '[':
+                # ANSI escape sequence - include it
+                j = i + 2
+                while j < len(text) and text[j] not in 'mH':
+                    j += 1
+                if j < len(text):
+                    j += 1  # Include the terminator
+                result += text[i:j]
+                i = j
+            else:
+                result += text[i]
+                visible_count += 1
+                i += 1
+        return result
+    
+    """
+    Write a line into a buffer row at a specific visible column position.
+    
+    This helper function composites a new line into an existing buffer row, preserving
+    content before and after the insertion point, and handling ANSI codes correctly.
+    """
+    def _write_line_to_buffer_row(self, buffer_row: str, line: str, start_col: int, max_width: int, terminal_width: int) -> str:
+        """Write a line into a buffer row string at visible position start_col."""
+        from .utils import strip_ansi, visible_length
+        
+        # Remove RESET from end if present
+        has_reset = buffer_row.endswith(ANSIColors.RESET)
+        buffer_content = buffer_row[:-len(ANSIColors.RESET)] if has_reset else buffer_row
+        
+        # Clip the line to max_width
+        clipped_line = self._clip_line(line, max_width, 0) if visible_length(line) > max_width else line
+        clipped_visible_len = visible_length(clipped_line)
+        
+        # Extract the "before" part (preserving ANSI codes)
+        before_part = self._extract_up_to_visible_pos(buffer_content, start_col) if start_col > 0 else ""
+        
+        # Extract the "after" part (everything after start_col + clipped_visible_len)
+        after_start_visible = start_col + clipped_visible_len
+        if after_start_visible < terminal_width:
+            # Extract from buffer_content starting at after_start_visible visible position
+            # First, find the string position corresponding to after_start_visible
+            buffer_visible = strip_ansi(buffer_content)
+            if after_start_visible < len(buffer_visible):
+                # Find the string position where after_start_visible visible chars start
+                visible_count = 0
+                i = 0
+                string_pos = 0
+                while i < len(buffer_content) and visible_count < after_start_visible:
+                    if buffer_content[i] == '\033' and i + 1 < len(buffer_content) and buffer_content[i + 1] == '[':
+                        j = i + 2
+                        while j < len(buffer_content) and buffer_content[j] not in 'mH':
+                            j += 1
+                        if j < len(buffer_content):
+                            j += 1
+                        i = j
+                    else:
+                        visible_count += 1
+                        i += 1
+                string_pos = i
+                after_part = buffer_content[string_pos:]
+            else:
+                after_part = ""
+        else:
+            after_part = ""
+        
+        # Build the new row: before_part + clipped_line + after_part
+        new_row = before_part + clipped_line + after_part
+        
+        # Ensure exactly terminal_width visible characters (pad with spaces if needed)
+        current_visible = visible_length(new_row)
+        if current_visible < terminal_width:
+            new_row += ' ' * (terminal_width - current_visible)
+        elif current_visible > terminal_width:
+            # Clip if somehow too long (shouldn't happen if clipping worked)
+            new_row = self._clip_line(new_row, terminal_width, 0)
+        
+        return new_row + ANSIColors.RESET
+    
+    """
+    Render a container into the frame buffer at its absolute position.
+    
+    This replaces the old stdout-writing logic with buffer writing.
+    """
+    def _render_container_to_buffer(self, container: Container, buffer: List[str], 
+                                   force_redraw: bool = False,
+                                   clip_row: Optional[int] = None, clip_col: Optional[int] = None,
+                                   clip_width: Optional[int] = None, clip_height: Optional[int] = None) -> None:
+        # Render the container itself
+        container_lines = container.render(self, force_redraw=force_redraw)
+        
+        # Render container lines into buffer with clipping
+        cols, rows = self.terminal_size
+        for i, line in enumerate(container_lines):
+            render_row = container.row + i - 1  # Convert to 0-based buffer index (container.row is 1-based)
+            
+            # Skip if outside terminal bounds
+            if render_row < 0 or render_row >= rows:
+                continue
+            
+            # Skip if outside clipping region vertically
+            if clip_row is not None and clip_height is not None:
+                clip_row_0based = clip_row - 1  # Convert to 0-based
+                if render_row < clip_row_0based or render_row >= clip_row_0based + clip_height:
+                    continue
+            
+            # Calculate horizontal clipping for this line
+            render_col = container.col - 1  # Convert to 0-based (visible column in buffer)
+            clipped_line = line
+            
+            if clip_col is not None and clip_width is not None:
+                clip_col_0based = clip_col - 1  # Convert to 0-based
+                clip_right = clip_col_0based + clip_width - 1
+                
+                # Container starts before clip region
+                if render_col < clip_col_0based:
+                    start_offset = clip_col_0based - render_col
+                    max_width = min(clip_width, container.width - start_offset)
+                    clipped_line = self._clip_line(line, max_width, start_offset)
+                    render_col = clip_col_0based
+                # Container extends beyond clip region
+                elif render_col + container.width - 1 > clip_right:
+                    max_width = clip_width - (render_col - clip_col_0based)
+                    if max_width > 0:
+                        clipped_line = self._clip_line(line, max_width, 0)
+                    else:
+                        continue  # Line is completely outside clip region
+                # Container is within clip region
+                else:
+                    clipped_line = line
+                    # Clip to container width
+                    from .utils import visible_length
+                    if visible_length(clipped_line) > container.width:
+                        clipped_line = self._clip_line(line, container.width, 0)
+            
+            # Determine how much width we can use
+            max_line_width = min(cols - render_col, container.width)
+            if clip_col is not None and clip_width is not None:
+                clip_col_0based = clip_col - 1
+                if render_col >= clip_col_0based:
+                    max_line_width = min(max_line_width, clip_width - (render_col - clip_col_0based))
+            
+            # Write the line into the buffer row
+            buffer[render_row] = self._write_line_to_buffer_row(
+                buffer[render_row], clipped_line, render_col, max_line_width, cols
+            )
+        
+        # Render children recursively (automatically clipped to container's content area)
+        container.render_children_to_buffer(self, buffer, force_redraw=force_redraw,
+                                          clip_row=clip_row, clip_col=clip_col,
+                                          clip_width=clip_width, clip_height=clip_height)
+    
+    """
+    Diff two frame buffers and write only changed rows to stdout.
+    
+    This eliminates flicker by building the entire frame in memory (back_buffer),
+    comparing it row-by-row against the previous frame (front_buffer), and writing
+    only changed rows atomically. This ensures the user sees complete, consistent frames
+    rather than partial updates, similar to btop's rendering approach.
+    """
+    def _diff_and_draw(self, front_buffer: Optional[List[str]], back_buffer: List[str]) -> None:
+        rows = len(back_buffer)
+        
+        # If no front buffer, draw everything (first frame or after resize)
+        if front_buffer is None or len(front_buffer) != rows:
+            # Full redraw
+            for row_idx in range(rows):
+                # Move cursor to row (1-based in ANSI)
+                sys.stdout.write(f'\033[{row_idx + 1};1H')
+                sys.stdout.write(back_buffer[row_idx])
+            sys.stdout.flush()
+            return
+        
+        # Diff row by row and write only changed rows
+        for row_idx in range(rows):
+            if front_buffer[row_idx] != back_buffer[row_idx]:
+                # Row changed - write it
+                # Move cursor to row (1-based in ANSI), column 1
+                sys.stdout.write(f'\033[{row_idx + 1};1H')
+                sys.stdout.write(back_buffer[row_idx])
+        
+        # Flush once after all changes
+        sys.stdout.flush()
+    
+    """Render all registered containers using double buffering to eliminate flicker."""
+    def render_all_panels(self, force_redraw: bool = False) -> None:
+        # Build the new frame in back buffer
+        self.back_buffer = self._build_frame_buffer(force_redraw=force_redraw)
+        
+        # Diff and draw only changed rows
+        self._diff_and_draw(self.front_buffer, self.back_buffer)
+        
+        # Swap buffers
+        self.front_buffer = self.back_buffer
     
     """Render a container and its children (internal method that handles clipping)."""
     def _render_container(self, container: Container, force_redraw: bool = False,
@@ -1168,6 +1443,8 @@ class ANSIRendererBase(BaseRenderer):
         sys.stdout.write('\033[2J')
         sys.stdout.write('\033[H')
         sys.stdout.flush()
+        # Invalidate buffers to force full redraw on next frame
+        self.front_buffer = None
     
     """Clean up on exit."""
     def cleanup(self) -> None:
