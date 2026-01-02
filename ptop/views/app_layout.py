@@ -13,6 +13,7 @@ from typing import Dict, Any
 from ..ui.ansi_renderer import ANSIRendererBase, HLayout, VLayout
 from .history_panel import HistoryPanel
 from .processor_panel import ProcessorPanel
+from .system_info_panel import SystemInfoPanel
 
 
 class AppLayout:
@@ -20,8 +21,8 @@ class AppLayout:
     Controller for the application's UI layout structure.
     
     This class manages the entire UI layout design:
-    - Root layout structure (VLayout containing HLayout)
-    - Panel controllers (HistoryPanel, ProcessorPanel)
+    - Root layout structure (VLayout containing HLayout for top row, SystemInfoPanel below)
+    - Panel controllers (HistoryPanel, ProcessorPanel, SystemInfoPanel)
     - Layout updates and bounds management
     - Panel update coordination
     """
@@ -41,14 +42,29 @@ class AppLayout:
         # Create horizontal layout for top row of panels
         self.top_hlayout = HLayout(margin=0, spacing=1)
         
+        # Create horizontal layout for bottom row (system info + blank panels)
+        self.bottom_hlayout = HLayout(margin=0, spacing=1)
+        
         # Create panel controllers
         self.history_panel = HistoryPanel(self.renderer)
         self.processor_panel = ProcessorPanel(self.renderer)
+        self.system_info_panel = SystemInfoPanel(self.renderer)
+        
+        # Create blank panels for bottom row (with borders, no content)
+        self.blank_panel1 = self.renderer.create_panel('blank_panel1')
+        self.blank_panel2 = self.renderer.create_panel('blank_panel2')
         
         # Build layout hierarchy
+        # Top row: history, processor (side by side)
         self.top_hlayout.add_panel(self.history_panel.panel)
         self.top_hlayout.add_panel(self.processor_panel.panel)
         self.root_layout.add_layout(self.top_hlayout)
+        
+        # Bottom row: system info panel + 2 blank panels
+        self.bottom_hlayout.add_panel(self.system_info_panel.panel)
+        self.bottom_hlayout.add_panel(self.blank_panel1)
+        self.bottom_hlayout.add_panel(self.blank_panel2)
+        self.root_layout.add_layout(self.bottom_hlayout)
         
         # Register root layout with renderer
         self.renderer.add_layout(self.root_layout)
@@ -68,14 +84,18 @@ class AppLayout:
         # Update panel layouts
         self.history_panel.update_layout()
         self.processor_panel.update_layout()
+        self.system_info_panel.update_layout()
     
-    def update(self, metrics: Dict[str, Any]) -> None:
+    def update(self, metrics: Dict[str, Any], force_redraw: bool = False) -> None:
         """
         Update all panels with current metrics.
         
         Args:
             metrics: Dictionary of metrics from collectors
+            force_redraw: If True, force all panels to redraw (used on resize)
         """
         self.history_panel.update(metrics)
         self.processor_panel.update(metrics)
+        # System info panel is static - only update on first call or force
+        self.system_info_panel.update(metrics, force=force_redraw)
 

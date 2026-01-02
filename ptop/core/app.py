@@ -68,16 +68,20 @@ class PTopApp:
             # Use mock collectors for testing/debugging
             from ..mock_collectors.mock_cpu import MockCPUCollector
             from ..mock_collectors.mock_gpu import MockGPUCollector
+            from ..mock_collectors.mock_system_info import MockSystemInfoCollector
             
             self.collectors.append(MockCPUCollector(num_cores=32))
             self.collectors.append(MockGPUCollector(num_gpus=1))
+            self.collectors.append(MockSystemInfoCollector())
         else:
             # Use real collectors
             from ..collectors.cpu import CPUCollector
             from ..collectors.gpu import GPUCollector
+            from ..collectors.system_info import SystemInfoCollector
             
             self.collectors.append(CPUCollector())
             self.collectors.append(GPUCollector())
+            self.collectors.append(SystemInfoCollector())
         
         # Future collectors will be added here:
         # self.collectors.append(MemoryCollector())
@@ -138,7 +142,7 @@ class PTopApp:
         
         # Collect initial metrics and update panels to ensure content is populated
         initial_metrics = self.collect_metrics()
-        self.layout.update(initial_metrics)
+        self.layout.update(initial_metrics, force_redraw=True)  # Force initial render
         
         # Update layout again after content is populated to ensure proper bounds calculation
         # This recalculates nested panel layouts with the actual content
@@ -162,13 +166,16 @@ class PTopApp:
                 metrics = self.collect_metrics()
                 
                 # Update UI layout and panels with metrics
-                self.layout.update(metrics)
+                # Pass force_redraw=True on resize to force system info panel to re-wrap
+                self.layout.update(metrics, force_redraw=resize_occurred)
                 
                 # Update layout again after content is populated (matches startup sequence)
                 # This ensures nested panel layouts are recalculated with the new content
                 if resize_occurred:
                     cols, rows = current_terminal_size
                     self.layout.update_layout(cols, rows)
+                    # Force system info panel to re-render after layout update (to re-wrap text)
+                    self.layout.update(metrics, force_redraw=True)
                 
                 # Render all panels using double buffering (layouts will be handled automatically)
                 # Double buffering eliminates flicker by building the entire frame in memory,
