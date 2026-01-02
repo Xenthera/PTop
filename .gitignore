@@ -126,3 +126,7 @@ $RECYCLE.BIN/
 # Local configuration
 .env.local
 .env.*.local
+
+# Profiling
+*.prof
+profile_stats.prof

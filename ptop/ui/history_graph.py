@@ -79,6 +79,9 @@ class SingleLineGraph:
         self.history: List[Tuple[int, float]] = [(1, min_value)] * virtual_width
         self.use_braille = use_braille
         self.colors = colors
+        # Performance: cache RGB color list and value_range
+        self._cached_rgb_colors: Optional[List[Tuple[int, int, int]]] = None
+        self._cached_value_range: float = max_value - min_value
     
     @property
     def width(self) -> int:
@@ -200,24 +203,10 @@ class SingleLineGraph:
         codepoint = self.BRAILLE_BASE + bitmask
         return chr(codepoint)
     
-    """
-    Get the ANSI color code for a specific value using the exact same
-    RGB interpolation as the graph rendering.
-    
-    Args:
-        value: The value to get color for (in original units, not normalized)
-        renderer: ANSIRendererBase instance for color conversion
-    
-    Returns:
-        ANSI color code for the value
-    """
-    def _get_value_color(self, value: float, renderer: 'ANSIRendererBase') -> str:
-        # Normalize to 0-100 for color mapping
-        value_range = self.max_value - self.min_value
-        if value_range == 0:
-            normalized_percent = 50.0
-        else:
-            normalized_percent = ((value - self.min_value) / value_range) * 100.0
+    """Get cached RGB colors, converting from ANSI codes if needed."""
+    def _get_rgb_colors(self) -> List[Tuple[int, int, int]]:
+        if self._cached_rgb_colors is not None:
+            return self._cached_rgb_colors
         
         # Get color list (default or custom)
         if self.colors is None or len(self.colors) == 0:
@@ -232,6 +221,32 @@ class SingleLineGraph:
                 rgb_colors.append(color)
             else:
                 rgb_colors.append(ansi_to_rgb(color))
+        
+        # Cache the result
+        self._cached_rgb_colors = rgb_colors
+        return rgb_colors
+    
+    """
+    Get the ANSI color code for a specific value using the exact same
+    RGB interpolation as the graph rendering.
+    
+    Args:
+        value: The value to get color for (in original units, not normalized)
+        renderer: ANSIRendererBase instance for color conversion
+    
+    Returns:
+        ANSI color code for the value
+    """
+    def _get_value_color(self, value: float, renderer: 'ANSIRendererBase') -> str:
+        # Normalize to 0-100 for color mapping (use cached value_range)
+        value_range = self._cached_value_range
+        if value_range == 0:
+            normalized_percent = 50.0
+        else:
+            normalized_percent = ((value - self.min_value) / value_range) * 100.0
+        
+        # Get cached RGB colors
+        rgb_colors = self._get_rgb_colors()
         
         # Interpolate color using the same logic as progress bars
         rgb = self._interpolate_color_list(rgb_colors, normalized_percent)
@@ -301,19 +316,9 @@ class SingleLineGraph:
             # Take only the last virtual_width values
             padded_history = self.history[-self.virtual_width:]
         
-        # Get color list (default or custom)
-        if self.colors is None or len(self.colors) == 0:
-            colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
-        else:
-            colors = self.colors
-        
-        # Convert colors to RGB (handle both ANSI codes and RGB tuples)
-        rgb_colors = []
-        for color in colors:
-            if isinstance(color, tuple):
-                rgb_colors.append(color)
-            else:
-                rgb_colors.append(ansi_to_rgb(color))
+        # Get cached RGB colors (convert once, reuse)
+        rgb_colors = self._get_rgb_colors()
+        value_range = self._cached_value_range
         
         # Render characters: each character packs 2 adjacent virtual columns
         for char_idx in range(self.width):
@@ -337,7 +342,6 @@ class SingleLineGraph:
             # Get color based on the maximum original value of the two columns
             max_original = max(left_original, right_original)
             # Normalize original value to percentage (0-100) for color mapping
-            value_range = self.max_value - self.min_value
             if value_range == 0:
                 height_percent = 50.0
             else:
@@ -453,6 +457,9 @@ class MultiLineGraph:
         self.use_braille = use_braille
         self.top_to_bottom = top_to_bottom  # If True, virtual Y=0 is at top; if False, at bottom
         self.colors = colors
+        # Performance: cache RGB color list and value_range
+        self._cached_rgb_colors: Optional[List[Tuple[int, int, int]]] = None
+        self._cached_value_range: float = max_value - min_value
     
     @property
     def width_chars(self) -> int:
@@ -604,6 +611,29 @@ class MultiLineGraph:
         codepoint = self.BRAILLE_BASE + bitmask
         return chr(codepoint)
     
+    """Get cached RGB colors, converting from ANSI codes if needed."""
+    def _get_rgb_colors(self) -> List[Tuple[int, int, int]]:
+        if self._cached_rgb_colors is not None:
+            return self._cached_rgb_colors
+        
+        # Get color list (default or custom)
+        if self.colors is None or len(self.colors) == 0:
+            colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
+        else:
+            colors = self.colors
+        
+        # Convert colors to RGB (handle both ANSI codes and RGB tuples)
+        rgb_colors = []
+        for color in colors:
+            if isinstance(color, tuple):
+                rgb_colors.append(color)
+            else:
+                rgb_colors.append(ansi_to_rgb(color))
+        
+        # Cache the result
+        self._cached_rgb_colors = rgb_colors
+        return rgb_colors
+    
     """
     Get the graph as a formatted string with colors using braille characters.
     
@@ -630,19 +660,8 @@ class MultiLineGraph:
             # Take only the last virtual_width values
             padded_history = self.history[-self.virtual_width:]
         
-        # Get color list (default or custom)
-        if self.colors is None or len(self.colors) == 0:
-            colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
-        else:
-            colors = self.colors
-        
-        # Convert colors to RGB (handle both ANSI codes and RGB tuples)
-        rgb_colors = []
-        for color in colors:
-            if isinstance(color, tuple):
-                rgb_colors.append(color)
-            else:
-                rgb_colors.append(ansi_to_rgb(color))
+        # Get cached RGB colors (convert once, reuse)
+        rgb_colors = self._get_rgb_colors()
         
         # Build a virtual raster grid
         # virtual_grid[virtual_y][virtual_x] = 1 if filled, 0 if empty
@@ -667,15 +686,35 @@ class MultiLineGraph:
                     if virtual_y < self.virtual_height:
                         virtual_grid[virtual_y][virtual_x] = 1
         
+        # Pre-calculate color codes for each row (color only depends on row position, not column/data)
+        row_color_codes = []
+        for char_row in range(self.height_chars):
+            # Color based on vertical position (row position) rather than value
+            if self.top_to_bottom:
+                position_percent = (char_row / (self.height_chars - 1)) * 100.0 if self.height_chars > 1 else 0.0
+            else:
+                position_percent = ((self.height_chars - 1 - char_row) / (self.height_chars - 1)) * 100.0 if self.height_chars > 1 else 0.0
+            
+            # Interpolate color based on position
+            rgb = self._interpolate_color_list(rgb_colors, position_percent)
+            
+            # Convert to ANSI color
+            if renderer._truecolor_support:
+                color_code = rgb_to_ansitruecolor(*rgb)
+            else:
+                color_code = rgb_to_ansi256(*rgb)
+            
+            row_color_codes.append(color_code)
+        
         # Render character rows from top to bottom
         graph_lines = []
         for char_row in range(self.height_chars):
             line_parts = []
+            color_code = row_color_codes[char_row]  # Reuse pre-calculated color
+            
             if self.top_to_bottom:
-                # Top to bottom: top character row maps to virtual_y = 0
                 virtual_row_base = char_row * 4
             else:
-                # Bottom to top: top character row maps to highest virtual_y
                 virtual_row_base = (self.height_chars - 1 - char_row) * 4
             
             # Render each character in this row
@@ -687,64 +726,26 @@ class MultiLineGraph:
                 right_heights = []
                 
                 if self.top_to_bottom:
-                    # TOP TO BOTTOM: virtual_y=0 is at top of grid
-                    # virtual_row_base = char_row * 4, so for char_row=0, virtual_row_base=0 (top)
-                    # We iterate tile_row from 0 to 3, which gives virtual_y from virtual_row_base to virtual_row_base+3
-                    # This means we're going from top to bottom of the tile
-                    # We want left_heights[0] = top row of tile, left_heights[3] = bottom row of tile
                     for tile_row in range(4):
                         virtual_y = virtual_row_base + tile_row
                         if 0 <= virtual_y < self.virtual_height:
-                            # Left column
                             left_heights.append(virtual_grid[virtual_y][virtual_col_base])
-                            # Right column
                             right_heights.append(virtual_grid[virtual_y][virtual_col_base + 1])
                         else:
                             left_heights.append(0)
                             right_heights.append(0)
-                    # left_heights[0] = top row of tile, left_heights[3] = bottom row of tile
-                    # This is the correct order for top_to_bottom=True
                 else:
-                    # BOTTOM TO TOP: Iterate from bottom to top of the tile
-                    # virtual_row_base is at the bottom, so we go from virtual_row_base up
-                    # We want left_heights[0] = bottom row, left_heights[3] = top row
                     for tile_row in range(4):
                         virtual_y = virtual_row_base + tile_row
                         if virtual_y < self.virtual_height:
-                            # Left column
                             left_heights.append(virtual_grid[virtual_y][virtual_col_base])
-                            # Right column
                             right_heights.append(virtual_grid[virtual_y][virtual_col_base + 1])
                         else:
                             left_heights.append(0)
                             right_heights.append(0)
-                    # left_heights[0] = bottom row, left_heights[3] = top row (correct order)
                 
                 # Pack into braille character
                 glyph = self._pack_tile(left_heights, right_heights)
-                
-                # Color based on vertical position (row position) rather than value
-                # For normal orientation (top_to_bottom=False): bottom = 0%, top = 100%
-                # For flipped orientation (top_to_bottom=True): top = 0%, bottom = 100%
-                if self.top_to_bottom:
-                    # Top to bottom: char_row 0 is top, so position increases downward
-                    # Top row (char_row=0) should map to first color (0%), bottom to last color (100%)
-                    position_percent = (char_row / (self.height_chars - 1)) * 100.0 if self.height_chars > 1 else 0.0
-                else:
-                    # Bottom to top: char_row 0 is top row visually, but represents highest virtual_y
-                    # Bottom should map to first color (0%), top to last color (100%)
-                    # So we reverse: char_row 0 (top visual) = 100%, char_row height_chars-1 (bottom visual) = 0%
-                    position_percent = ((self.height_chars - 1 - char_row) / (self.height_chars - 1)) * 100.0 if self.height_chars > 1 else 0.0
-                
-                # Interpolate color based on position
-                rgb = self._interpolate_color_list(rgb_colors, position_percent)
-                
-                # Convert to ANSI color
-                if renderer._truecolor_support:
-                    color_code = rgb_to_ansitruecolor(*rgb)
-                else:
-                    color_code = rgb_to_ansi256(*rgb)
-                
                 line_parts.append(color_code + glyph)
             
             graph_lines.append(''.join(line_parts) + ANSIColors.RESET)
@@ -784,3 +785,51 @@ class MultiLineGraph:
         
         # Interpolate between the two colors
         return interpolate_rgb(rgb_colors[lower_index], rgb_colors[upper_index], ratio)
+    
+    """
+    Get the ANSI color code for a specific value using the exact same
+    RGB interpolation as the graph rendering.
+    
+    Args:
+        value: The value to get color for (in original units, not normalized)
+        renderer: ANSIRendererBase instance for color conversion
+    
+    Returns:
+        ANSI color code for the value
+    """
+    def _get_value_color(self, value: float, renderer: 'ANSIRendererBase') -> str:
+        # Normalize to 0-100 for color mapping (use cached value_range)
+        value_range = self._cached_value_range
+        if value_range == 0:
+            normalized_percent = 50.0
+        else:
+            normalized_percent = ((value - self.min_value) / value_range) * 100.0
+        
+        # Get cached RGB colors
+        rgb_colors = self._get_rgb_colors()
+        
+        # Interpolate color using the same logic as progress bars
+        rgb = self._interpolate_color_list(rgb_colors, normalized_percent)
+        
+        # Convert to ANSI
+        if renderer._truecolor_support:
+            return rgb_to_ansitruecolor(*rgb)
+        else:
+            return rgb_to_ansi256(*rgb)
+    
+    """
+    Get the ANSI color code for the current (latest) value in the history.
+    
+    Args:
+        renderer: ANSIRendererBase instance for color conversion
+    
+    Returns:
+        ANSI color code for the current value, or default color if history is empty
+    """
+    def get_current_value_color(self, renderer: 'ANSIRendererBase') -> str:
+        if not self.history:
+            return self._get_value_color(self.min_value, renderer)
+        
+        # Get original value from the last entry
+        _, current_value = self.history[-1]
+        return self._get_value_color(current_value, renderer)

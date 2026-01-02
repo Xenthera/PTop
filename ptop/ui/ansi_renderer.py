@@ -1087,23 +1087,26 @@ class ANSIRendererBase(BaseRenderer):
     Returns:
         Clipped line string with all ANSI codes preserved
     """
-    def _clip_line(self, line: str, max_visible_width: int, start_offset: int = 0) -> str:
-        from .utils import strip_ansi
-        
+    def _clip_line(self, line: str, max_visible_width: int, start_offset: int = 0) -> Tuple[str, int]:
+        """
+        Clip a line to fit within visible width, preserving all ANSI codes.
+        Returns (clipped_line, visible_length).
+        """
         if max_visible_width <= 0:
-            return ""
+            return ("", 0)
         
         # Build a mapping of visible character positions to original string positions
         # This allows us to clip while preserving ANSI codes
         visible_to_original = []
         i = 0
-        while i < len(line):
-            if line[i] == '\033' and i + 1 < len(line) and line[i + 1] == '[':
+        line_len = len(line)
+        while i < line_len:
+            if line[i] == '\033' and i + 1 < line_len and line[i + 1] == '[':
                 # Found ANSI escape sequence - skip it but don't add to mapping
                 j = i + 2
-                while j < len(line) and line[j] not in 'mH':
+                while j < line_len and line[j] not in 'mH':
                     j += 1
-                if j < len(line):
+                if j < line_len:
                     j += 1  # Include the terminator
                 i = j
             else:
@@ -1115,14 +1118,14 @@ class ANSIRendererBase(BaseRenderer):
         
         # Skip lines that are completely before the start offset
         if start_offset >= visible_len:
-            return ""
+            return ("", 0)
         
         # Calculate the range of visible characters we want
         start_visible = start_offset
         end_visible = min(start_offset + max_visible_width, visible_len)
         
         if start_visible >= end_visible:
-            return ""
+            return ("", 0)
         
         # Find the corresponding positions in the original string
         start_original = visible_to_original[start_visible]
@@ -1131,7 +1134,7 @@ class ANSIRendererBase(BaseRenderer):
         # Extract the clipped portion, preserving all ANSI codes
         clipped = line[start_original:end_original]
         
-        return clipped
+        return (clipped, end_visible - start_visible)
     
     """
     Build a complete frame buffer by rendering all containers.
@@ -1168,22 +1171,23 @@ class ANSIRendererBase(BaseRenderer):
         
         visible_count = 0
         i = 0
-        result = ""
-        while i < len(text) and visible_count < visible_pos:
-            if text[i] == '\033' and i + 1 < len(text) and text[i + 1] == '[':
+        result_parts = []  # Use list for faster concatenation
+        text_len = len(text)
+        while i < text_len and visible_count < visible_pos:
+            if text[i] == '\033' and i + 1 < text_len and text[i + 1] == '[':
                 # ANSI escape sequence - include it
                 j = i + 2
-                while j < len(text) and text[j] not in 'mH':
+                while j < text_len and text[j] not in 'mH':
                     j += 1
-                if j < len(text):
+                if j < text_len:
                     j += 1  # Include the terminator
-                result += text[i:j]
+                result_parts.append(text[i:j])
                 i = j
             else:
-                result += text[i]
+                result_parts.append(text[i])
                 visible_count += 1
                 i += 1
-        return result
+        return ''.join(result_parts)
     
     """
     Write a line into a buffer row at a specific visible column position.
@@ -1193,58 +1197,79 @@ class ANSIRendererBase(BaseRenderer):
     """
     def _write_line_to_buffer_row(self, buffer_row: str, line: str, start_col: int, max_width: int, terminal_width: int) -> str:
         """Write a line into a buffer row string at visible position start_col."""
-        from .utils import strip_ansi, visible_length
+        from .utils import visible_length
         
         # Remove RESET from end if present
         has_reset = buffer_row.endswith(ANSIColors.RESET)
         buffer_content = buffer_row[:-len(ANSIColors.RESET)] if has_reset else buffer_row
         
-        # Clip the line to max_width
-        clipped_line = self._clip_line(line, max_width, 0) if visible_length(line) > max_width else line
-        clipped_visible_len = visible_length(clipped_line)
-        
-        # Extract the "before" part (preserving ANSI codes)
-        before_part = self._extract_up_to_visible_pos(buffer_content, start_col) if start_col > 0 else ""
-        
-        # Extract the "after" part (everything after start_col + clipped_visible_len)
-        after_start_visible = start_col + clipped_visible_len
-        if after_start_visible < terminal_width:
-            # Extract from buffer_content starting at after_start_visible visible position
-            # First, find the string position corresponding to after_start_visible
-            buffer_visible = strip_ansi(buffer_content)
-            if after_start_visible < len(buffer_visible):
-                # Find the string position where after_start_visible visible chars start
-                visible_count = 0
-                i = 0
-                string_pos = 0
-                while i < len(buffer_content) and visible_count < after_start_visible:
-                    if buffer_content[i] == '\033' and i + 1 < len(buffer_content) and buffer_content[i + 1] == '[':
-                        j = i + 2
-                        while j < len(buffer_content) and buffer_content[j] not in 'mH':
-                            j += 1
-                        if j < len(buffer_content):
-                            j += 1
-                        i = j
-                    else:
-                        visible_count += 1
-                        i += 1
-                string_pos = i
-                after_part = buffer_content[string_pos:]
-            else:
-                after_part = ""
+        # Clip the line to max_width and get visible length from _clip_line (avoids extra visible_length call)
+        # Quick check: if line is short, avoid calling _clip_line
+        line_visible_len = visible_length(line)
+        if line_visible_len > max_width:
+            clipped_line, clipped_visible_len = self._clip_line(line, max_width, 0)
         else:
+            clipped_line = line
+            clipped_visible_len = line_visible_len
+        
+        # Extract "before" part, find "after" position, and count "after_visible" in a single pass
+        after_start_visible = start_col + clipped_visible_len
+        if start_col > 0 or after_start_visible < terminal_width:
+            visible_count = 0
+            i = 0
+            buffer_len = len(buffer_content)
+            before_parts = []
+            after_start_pos = buffer_len  # Default to end if not found
+            after_visible = 0
+            
+            while i < buffer_len:
+                if buffer_content[i] == '\033' and i + 1 < buffer_len and buffer_content[i + 1] == '[':
+                    # ANSI escape sequence
+                    j = i + 2
+                    while j < buffer_len and buffer_content[j] not in 'mH':
+                        j += 1
+                    if j < buffer_len:
+                        j += 1
+                    
+                    if visible_count < start_col:
+                        before_parts.append(buffer_content[i:j])
+                    elif visible_count >= after_start_visible and after_start_pos == buffer_len:
+                        after_start_pos = i
+                    
+                    i = j
+                else:
+                    # Regular character
+                    if visible_count < start_col:
+                        before_parts.append(buffer_content[i])
+                    elif visible_count >= after_start_visible:
+                        if after_start_pos == buffer_len:
+                            after_start_pos = i
+                        after_visible += 1
+                    
+                    visible_count += 1
+                    i += 1
+            
+            before_part = ''.join(before_parts) if start_col > 0 else ""
+            after_part = buffer_content[after_start_pos:] if after_start_visible < terminal_width and after_start_pos < buffer_len else ""
+            if not after_part:
+                after_visible = 0
+        else:
+            before_part = ""
             after_part = ""
+            after_visible = 0
         
         # Build the new row: before_part + clipped_line + after_part
         new_row = before_part + clipped_line + after_part
         
+        # Calculate total visible length (we already have all components)
+        total_visible = start_col + clipped_visible_len + after_visible
+        
         # Ensure exactly terminal_width visible characters (pad with spaces if needed)
-        current_visible = visible_length(new_row)
-        if current_visible < terminal_width:
-            new_row += ' ' * (terminal_width - current_visible)
-        elif current_visible > terminal_width:
+        if total_visible < terminal_width:
+            new_row += ' ' * (terminal_width - total_visible)
+        elif total_visible > terminal_width:
             # Clip if somehow too long (shouldn't happen if clipping worked)
-            new_row = self._clip_line(new_row, terminal_width, 0)
+            new_row, _ = self._clip_line(new_row, terminal_width, 0)
         
         return new_row + ANSIColors.RESET
     
@@ -1287,13 +1312,13 @@ class ANSIRendererBase(BaseRenderer):
                 if render_col < clip_col_0based:
                     start_offset = clip_col_0based - render_col
                     max_width = min(clip_width, container.width - start_offset)
-                    clipped_line = self._clip_line(line, max_width, start_offset)
+                    clipped_line, _ = self._clip_line(line, max_width, start_offset)
                     render_col = clip_col_0based
                 # Container extends beyond clip region
                 elif render_col + container.width - 1 > clip_right:
                     max_width = clip_width - (render_col - clip_col_0based)
                     if max_width > 0:
-                        clipped_line = self._clip_line(line, max_width, 0)
+                        clipped_line, _ = self._clip_line(line, max_width, 0)
                     else:
                         continue  # Line is completely outside clip region
                 # Container is within clip region
@@ -1301,8 +1326,10 @@ class ANSIRendererBase(BaseRenderer):
                     clipped_line = line
                     # Clip to container width
                     from .utils import visible_length
+                    # Check if clipping is needed using visible_length, then clip if needed
+                    from .utils import visible_length
                     if visible_length(clipped_line) > container.width:
-                        clipped_line = self._clip_line(line, container.width, 0)
+                        clipped_line, _ = self._clip_line(line, container.width, 0)
             
             # Determine how much width we can use
             max_line_width = min(cols - render_col, container.width)
@@ -1392,13 +1419,13 @@ class ANSIRendererBase(BaseRenderer):
                 if container.col < clip_col:
                     start_offset = clip_col - container.col
                     max_width = min(clip_width, container.width - start_offset)
-                    clipped_line = self._clip_line(line, max_width, start_offset)
+                    clipped_line, _ = self._clip_line(line, max_width, start_offset)
                     render_col = clip_col
                 # Container extends beyond clip region
                 elif container.col + container.width - 1 > clip_right:
                     max_width = clip_width - (container.col - clip_col)
                     if max_width > 0:
-                        clipped_line = self._clip_line(line, max_width, 0)
+                        clipped_line, _ = self._clip_line(line, max_width, 0)
                     else:
                         continue  # Line is completely outside clip region
                 # Container is within clip region

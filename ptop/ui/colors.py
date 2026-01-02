@@ -143,13 +143,30 @@ Args:
 Returns:
     ANSI escape sequence for truecolor mode
 """
+# Cache for rgb_to_ansitruecolor (256^3 = 16M possible values, but we'll use LRU cache)
+_rgb_cache = {}
+_rgb_cache_size = 65536  # Cache up to 64K most recent colors
+
 def rgb_to_ansitruecolor(r: int, g: int, b: int) -> str:
     # Clamp values
     r = max(0, min(255, r))
     g = max(0, min(255, g))
     b = max(0, min(255, b))
     
-    return f'\033[38;2;{r};{g};{b}m'
+    # Use cache key
+    cache_key = (r, g, b)
+    if cache_key in _rgb_cache:
+        return _rgb_cache[cache_key]
+    
+    # Generate ANSI code (use % formatting which is slightly faster than f-strings for this)
+    result = f'\033[38;2;{r};{g};{b}m'
+    
+    # Simple cache: if cache is full, clear it (simple but effective for repeated colors)
+    if len(_rgb_cache) >= _rgb_cache_size:
+        _rgb_cache.clear()
+    
+    _rgb_cache[cache_key] = result
+    return result
 
 
 """

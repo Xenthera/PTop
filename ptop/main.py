@@ -31,14 +31,42 @@ def main():
                        help='Update interval in seconds (default: 0.05)')
     parser.add_argument('--debug', action='store_true',
                        help='Use mock collectors with random data instead of real hardware')
+    parser.add_argument('--profile', action='store_true',
+                       help='Enable profiling and save results to profile_stats.prof')
     
     args = parser.parse_args()
     
-    # Create application instance
-    app = PTopApp(update_interval=args.interval, debug=args.debug)
-    
-    # Run the application
-    app.run()
+    if args.profile:
+        import cProfile
+        import pstats
+        profiler = cProfile.Profile()
+        profiler.enable()
+        
+        try:
+            # Create application instance
+            app = PTopApp(update_interval=args.interval, debug=args.debug)
+            # Run the application
+            app.run()
+        finally:
+            profiler.disable()
+            # Save stats to file
+            profiler.dump_stats('profile_stats.prof')
+            print("\nProfiling data saved to profile_stats.prof")
+            print("\nTop 20 functions by cumulative time:")
+            print("=" * 80)
+            stats = pstats.Stats(profiler)
+            stats.sort_stats('cumulative')
+            stats.print_stats(20)
+            print("\nTo view detailed profile, run:")
+            print("  python -m pstats profile_stats.prof")
+            print("  # In pstats prompt: sort cumulative | stats 30")
+            print("\nOr install snakeviz and run:")
+            print("  snakeviz profile_stats.prof")
+    else:
+        # Create application instance
+        app = PTopApp(update_interval=args.interval, debug=args.debug)
+        # Run the application
+        app.run()
 
 
 if __name__ == "__main__":

@@ -118,3 +118,4 @@ class MockCPUCollector(BaseCollector):
             'count_physical': self.num_cores // 2,  # Assume hyperthreading
         }
 
+

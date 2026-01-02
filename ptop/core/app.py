@@ -69,7 +69,7 @@ class PTopApp:
             from ..mock_collectors.mock_cpu import MockCPUCollector
             from ..mock_collectors.mock_gpu import MockGPUCollector
             
-            self.collectors.append(MockCPUCollector(num_cores=12))
+            self.collectors.append(MockCPUCollector(num_cores=32))
             self.collectors.append(MockGPUCollector(num_gpus=1))
         else:
             # Use real collectors

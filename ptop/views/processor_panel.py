@@ -49,7 +49,7 @@ class ProcessorPanel:
         self.inline2_graph: Optional[SingleLineGraph] = None  # GPU VRAM usage graph
         self.inline2_temp_graph: Optional[SingleLineGraph] = None  # GPU temperature graph
         self.core_graphs: List[MultiLineGraph] = []  # Multi-line graphs for each core
-        self.core_temp_graphs: List[MultiLineGraph] = []  # Temperature graphs for each core
+        self.core_temp_graphs: List[SingleLineGraph] = []  # Single-line temperature graphs for each core
         
         self._setup_panel()
     
@@ -70,13 +70,11 @@ class ProcessorPanel:
         
         # Create graph for panel2 bottom inline (GPU VRAM usage, 0-100%)
         self.inline2_graph = self.renderer.create_history_graph(8, min_value=0.0, max_value=100.0, use_braille=True)
-        # Set red-based gradient: dark red -> red -> orange -> yellow -> white
+        # Set red -> pink -> white gradient
         self.inline2_graph.colors = [
-            (128, 0, 0),      # Dark red
             (255, 0, 0),      # Red
-            (255, 128, 0),    # Orange
-            (255, 255, 0),    # Yellow
-            (255, 255, 255)  # White
+            (255, 182, 193),  # Pink
+            (255, 255, 255)   # White
         ]
         
         # Create graph for panel2 bottom inline (GPU temperature, mapped 0-100% to 30-100°C)
@@ -148,15 +146,13 @@ class ProcessorPanel:
         
         # Only create temperature graphs if per-core temperature data is available
         if not self.core_temp_graphs and num_cores > 0 and has_per_core_temp:
-            # Create a temperature graph for each core
+            # Create a single-line temperature graph for each core
             for _ in range(num_cores):
-                graph = self.renderer.create_multi_line_graph(
-                    width_chars=20,  # Default, will be updated
-                    height_chars=8,   # Default, will be updated
+                graph = self.renderer.create_history_graph(
+                    width=10,  # Default width, will be resized by InlineGraph
                     min_value=30.0,
                     max_value=75.0,
-                    use_braille=True,
-                    top_to_bottom=False
+                    use_braille=True
                 )
                 # Set blue -> purple -> white gradient (same as overall temp graph)
                 graph.colors = [ANSIColors.BRIGHT_BLUE, ANSIColors.BRIGHT_MAGENTA, ANSIColors.BRIGHT_WHITE]
@@ -269,18 +265,14 @@ class ProcessorPanel:
                     # Get panel content area dimensions for graph sizing
                     content_row, content_col, content_width, content_height = core_panel.get_content_area()
                     
-                    # Update graph dimensions to fill the panel (leave 1 line for percentage/temp at bottom)
-                    graph_height = max(1, content_height - 1)  # Leave 1 line for text
+                    # Update usage graph dimensions to fill the panel
+                    # Only leave 1 line for temperature inline if temp data is available
+                    graph_height = max(1, content_height - (1 if core_temp is not None else 0))
                     graph_width = max(1, content_width)
                     
                     if self.core_graphs[i].width_chars != graph_width or self.core_graphs[i].height_chars != graph_height:
                         self.core_graphs[i].width_chars = graph_width
                         self.core_graphs[i].height_chars = graph_height
-                    
-                    if i < len(self.core_temp_graphs):
-                        if self.core_temp_graphs[i].width_chars != graph_width or self.core_temp_graphs[i].height_chars != graph_height:
-                            self.core_temp_graphs[i].width_chars = graph_width
-                            self.core_temp_graphs[i].height_chars = graph_height
                     
                     # Clear and render the panel
                     core_panel.clear()
@@ -291,12 +283,13 @@ class ProcessorPanel:
                     for line in graph_lines:
                         core_panel.add_line(line)
                     
-                    # Add percentage and temperature at the bottom
-                    bottom_line_parts = [f"{int(core_usage):3d}%"]
-                    if core_temp is not None:
-                        bottom_line_parts.append(f"{int(round(core_temp))}°C")
-                    bottom_line = " ".join(bottom_line_parts)
-                    core_panel.add_line(bottom_line)
+                    # Add temperature inline (graph + text) at the bottom, only if temp data is available
+                    if core_temp is not None and i < len(self.core_temp_graphs):
+                        inline_elements = [
+                            InlineGraph(self.core_temp_graphs[i], renderer=self.renderer),
+                            InlineText(f"{int(round(core_temp))}°C")
+                        ]
+                        core_panel.add_inline(*inline_elements, renderer=self.renderer)
                     
                     # Update right label with percentage
                     core_panel.right_labels = [f"{int(core_usage):3d}%"]
