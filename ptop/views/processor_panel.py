@@ -7,10 +7,11 @@ This module manages the processor panel (panel2) which displays:
 - Processor details and statistics
 """
 
-from typing import List, Dict, Any, Optional
-from ..ui.ansi_renderer import ANSIRendererBase, VLayout, HLayout
+import math
+from typing import List, Dict, Any, Optional, Tuple
+from ..ui.ansi_renderer import ANSIRendererBase, VLayout, HLayout, Panel
 from ..ui.colors import ANSIColors, get_gradient_color
-from ..ui.history_graph import SingleLineGraph
+from ..ui.history_graph import SingleLineGraph, MultiLineGraph
 from ..ui.progress_bar import ProgressBar
 from ..ui.inline import InlineText, InlineBar, InlineGraph
 from ..ui.utils import visible_length
@@ -40,17 +41,15 @@ class ProcessorPanel:
         self.vlayout = None
         self.inline1 = None
         self.inline2 = None
-        self.subpanel1 = None
-        self.subpanel2 = None
-        self.pipe = None
-        self.hlayout = None
+        self.core_grid_layout: Optional[VLayout] = None  # Grid layout for core panels
+        self.core_panels: List[Panel] = []  # List of panels for each core
         
         # Graph references
         self.inline1_graph: Optional[SingleLineGraph] = None  # CPU temperature graph
         self.inline2_graph: Optional[SingleLineGraph] = None  # GPU VRAM usage graph
         self.inline2_temp_graph: Optional[SingleLineGraph] = None  # GPU temperature graph
-        self.core_graphs: List[SingleLineGraph] = []
-        self.core_temp_graphs: List[SingleLineGraph] = []
+        self.core_graphs: List[MultiLineGraph] = []  # Multi-line graphs for each core
+        self.core_temp_graphs: List[MultiLineGraph] = []  # Temperature graphs for each core
         
         self._setup_panel()
     
@@ -71,8 +70,14 @@ class ProcessorPanel:
         
         # Create graph for panel2 bottom inline (GPU VRAM usage, 0-100%)
         self.inline2_graph = self.renderer.create_history_graph(8, min_value=0.0, max_value=100.0, use_braille=True)
-        # Set red -> pink -> white gradient
-        self.inline2_graph.colors = [ANSIColors.BRIGHT_RED, ANSIColors.BRIGHT_MAGENTA, ANSIColors.BRIGHT_WHITE]
+        # Set red-based gradient: dark red -> red -> orange -> yellow -> white
+        self.inline2_graph.colors = [
+            (128, 0, 0),      # Dark red
+            (255, 0, 0),      # Red
+            (255, 128, 0),    # Orange
+            (255, 255, 0),    # Yellow
+            (255, 255, 255)  # White
+        ]
         
         # Create graph for panel2 bottom inline (GPU temperature, mapped 0-100% to 30-100°C)
         self.inline2_temp_graph = self.renderer.create_history_graph(10, min_value=30.0, max_value=100.0, use_braille=True)
@@ -91,26 +96,9 @@ class ProcessorPanel:
         )
         self.vlayout.add_panel(self.inline1)
         
-        # Create an HLayout with subpanels
-        self.hlayout = HLayout(margin=0, spacing=0)
-        self.subpanel1 = self.renderer.create_panel(
-            'panel2_subpanel1',
-            borderless=True
-        )
-        self.subpanel2 = self.renderer.create_panel(
-            'panel2_subpanel2',
-            borderless=True
-        )
-        # Create a borderless panel for the vertical pipe separator
-        self.pipe = self.renderer.create_panel(
-            'panel2_pipe',
-            borderless=True,
-            max_width=1
-        )
-        self.hlayout.add_panel(self.subpanel1)
-        self.hlayout.add_panel(self.pipe)
-        self.hlayout.add_panel(self.subpanel2)
-        self.vlayout.add_layout(self.hlayout)
+        # Create grid layout for core panels (will be populated dynamically)
+        self.core_grid_layout = VLayout(margin=0, spacing=0)
+        self.vlayout.add_layout(self.core_grid_layout)
         
         # Create another borderless panel for inline content (will be added to layout only when GPU data exists)
         self.inline2 = self.renderer.create_panel(
@@ -126,22 +114,94 @@ class ProcessorPanel:
         self.vlayout.set_bounds(content_row, content_col, content_width, content_height)
         self.vlayout.update()
     
+    def _calculate_grid_dimensions(self, num_cores: int) -> Tuple[int, int]:
+        """
+    Calculate grid dimensions (rows x cols) for a square-like layout.
+    For perfect squares: 4 cores = 2x2, 9 cores = 3x3, etc.
+    For non-perfect squares: use the next larger square and leave empty spaces.
+    """
+        if num_cores == 0:
+            return (0, 0)
+        
+        # Calculate the square root and round up
+        sqrt_cores = math.sqrt(num_cores)
+        cols = math.ceil(sqrt_cores)
+        rows = math.ceil(num_cores / cols)
+        
+        return (rows, cols)
+    
     def _initialize_core_graphs(self, num_cores: int, has_per_core_temp: bool = False) -> None:
-        """Initialize core graphs if not already done (lazy initialization)."""
+        """Initialize core graphs and panels if not already done (lazy initialization)."""
         if not self.core_graphs and num_cores > 0:
-            # Create a graph for each core (max width 10)
-            for _ in range(num_cores):
-                graph = self.renderer.create_history_graph(10, min_value=0.0, max_value=100.0, use_braille=True)
+            # Create a multi-line graph for each core (dimensions will be set based on panel size)
+            # Start with a default size, will be updated when panel dimensions are known
+            for i in range(num_cores):
+                graph = self.renderer.create_multi_line_graph(
+                    width_chars=20,  # Default, will be updated
+                    height_chars=8,   # Default, will be updated
+                    min_value=0.0,
+                    max_value=100.0,
+                    use_braille=True,
+                    top_to_bottom=False  # Bottom to top (default)
+                )
                 self.core_graphs.append(graph)
         
         # Only create temperature graphs if per-core temperature data is available
         if not self.core_temp_graphs and num_cores > 0 and has_per_core_temp:
-            # Create a temperature graph for each core (max width 8, mapped 30-75°C)
+            # Create a temperature graph for each core
             for _ in range(num_cores):
-                graph = self.renderer.create_history_graph(8, min_value=30.0, max_value=75.0, use_braille=True)
+                graph = self.renderer.create_multi_line_graph(
+                    width_chars=20,  # Default, will be updated
+                    height_chars=8,   # Default, will be updated
+                    min_value=30.0,
+                    max_value=75.0,
+                    use_braille=True,
+                    top_to_bottom=False
+                )
                 # Set blue -> purple -> white gradient (same as overall temp graph)
                 graph.colors = [ANSIColors.BRIGHT_BLUE, ANSIColors.BRIGHT_MAGENTA, ANSIColors.BRIGHT_WHITE]
                 self.core_temp_graphs.append(graph)
+    
+    def _setup_core_grid(self, num_cores: int) -> None:
+        """Set up the grid layout for core panels."""
+        if num_cores == 0:
+            return
+        
+        # Calculate grid dimensions
+        rows, cols = self._calculate_grid_dimensions(num_cores)
+        
+        # Clear existing grid if it exists
+        while self.core_grid_layout.children:
+            child = self.core_grid_layout.children[0]
+            self.core_grid_layout.remove_child(child)
+        self.core_panels.clear()
+        
+        # Create grid: rows of HLayouts, each containing core panels
+        for row_idx in range(rows):
+            row_layout = HLayout(margin=0, spacing=0)
+            
+            for col_idx in range(cols):
+                core_idx = row_idx * cols + col_idx
+                
+                if core_idx < num_cores:
+                    # Create a bordered panel for this core
+                    core_panel = self.renderer.create_panel(
+                        f'panel2_core_{core_idx}',
+                        title=f'C{core_idx}',
+                        rounded=False,
+                        border_color=ANSIColors.BRIGHT_BLACK
+                    )
+                    self.core_panels.append(core_panel)
+                    row_layout.add_panel(core_panel)
+                else:
+                    # Empty space for non-perfect squares
+                    empty_panel = self.renderer.create_panel(
+                        f'panel2_empty_{row_idx}_{col_idx}',
+                        borderless=True
+                    )
+                    row_layout.add_panel(empty_panel)
+            
+            self.core_grid_layout.add_layout(row_layout)
     
     def update(self, metrics: Dict[str, Any]) -> None:
         """
@@ -160,10 +220,6 @@ class ProcessorPanel:
         per_core_temp = temp_data.get('per_core') if temp_data else None
         has_per_core_temp = per_core_temp is not None and len(per_core_temp) > 0 and any(t is not None for t in per_core_temp)
         
-        # Initialize core graphs if needed (only create temp graphs if per-core temp is available)
-        if per_core:
-            self._initialize_core_graphs(len(per_core), has_per_core_temp=has_per_core_temp)
-        
         # Update panel2 title with simple CPU name (bold)
         cpu_name_simple = cpu_data.get('name_simple', 'CPU')
         self.panel.title = ANSIColors.BOLD + cpu_name_simple + ANSIColors.RESET
@@ -180,20 +236,24 @@ class ProcessorPanel:
         else:
             self.panel.right_labels = []
         
-        # Update core subpanels
-        if per_core and self.core_graphs:
-            # Calculate maximum label width for alignment (e.g., "C11" is longer than "C0")
-            max_label_len = len(f"C{len(per_core) - 1}")
-            
-            # Split cores in half between the two subpanels
+        # Update core grid
+        if per_core:
             num_cores = len(per_core)
-            midpoint = num_cores // 2
             
-            # Update subpanel1 with first half of cores
-            self.subpanel1.clear()
-            for i in range(midpoint):
-                if i < len(self.core_graphs):
+            # Initialize core graphs if needed
+            self._initialize_core_graphs(num_cores, has_per_core_temp=has_per_core_temp)
+            
+            # Set up grid layout if not already done or if number of cores changed
+            if len(self.core_panels) != num_cores:
+                self._setup_core_grid(num_cores)
+            
+            # Update each core panel with graph and data
+            for i in range(num_cores):
+                if i < len(self.core_graphs) and i < len(self.core_panels):
                     core_usage = per_core[i]
+                    core_panel = self.core_panels[i]
+                    
+                    # Update usage graph
                     self.core_graphs[i].add_value(core_usage)
                     
                     # Get per-core temperature if available
@@ -201,79 +261,45 @@ class ProcessorPanel:
                     if per_core_temp and i < len(per_core_temp):
                         core_temp = per_core_temp[i]
                     
-                    # Update temperature graph if graph exists (always show graph, even if temp data missing)
+                    # Update temperature graph if available
                     if i < len(self.core_temp_graphs):
                         if core_temp is not None:
                             self.core_temp_graphs[i].add_value(core_temp)
-                        # If no temp data, graph will show as gray zeros (prefilled)
                     
-                    # Create label with bold C and no colon
-                    label_text = f"C{i}"
-                    bold_label_text = ANSIColors.BOLD + "C" + ANSIColors.RESET + label_text[1:]
+                    # Get panel content area dimensions for graph sizing
+                    content_row, content_col, content_width, content_height = core_panel.get_content_area()
                     
-                    # Calculate padding needed
-                    visible_label_len = visible_length(bold_label_text)
-                    padding_needed = max_label_len - visible_label_len
-                    padded_label = bold_label_text + (" " * padding_needed)
+                    # Update graph dimensions to fill the panel (leave 1 line for percentage/temp at bottom)
+                    graph_height = max(1, content_height - 1)  # Leave 1 line for text
+                    graph_width = max(1, content_width)
                     
-                    # Build inline elements: padded label (C bold) + usage graph + percentage
-                    inline_elements = [
-                        InlineText(padded_label),
-                        InlineGraph(self.core_graphs[i], renderer=self.renderer),
-                        InlineText(f"{core_usage:3d}%"),
-                    ]
+                    if self.core_graphs[i].width_chars != graph_width or self.core_graphs[i].height_chars != graph_height:
+                        self.core_graphs[i].width_chars = graph_width
+                        self.core_graphs[i].height_chars = graph_height
                     
-                    # Add temperature graph (always show if graph exists) and value (only if temp data available)
                     if i < len(self.core_temp_graphs):
-                        inline_elements.append(InlineGraph(self.core_temp_graphs[i], renderer=self.renderer, max_size=8))
-                        if core_temp is not None:
-                            inline_elements.append(InlineText(f"{int(round(core_temp))}°C"))
+                        if self.core_temp_graphs[i].width_chars != graph_width or self.core_temp_graphs[i].height_chars != graph_height:
+                            self.core_temp_graphs[i].width_chars = graph_width
+                            self.core_temp_graphs[i].height_chars = graph_height
                     
-                    # Add inline composition
-                    self.subpanel1.add_inline(*inline_elements, renderer=self.renderer)
-            
-            # Update subpanel2 with second half of cores
-            self.subpanel2.clear()
-            for i in range(midpoint, num_cores):
-                if i < len(self.core_graphs):
-                    core_usage = per_core[i]
-                    self.core_graphs[i].add_value(core_usage)
+                    # Clear and render the panel
+                    core_panel.clear()
                     
-                    # Get per-core temperature if available
-                    core_temp = None
-                    if per_core_temp and i < len(per_core_temp):
-                        core_temp = per_core_temp[i]
+                    # Render the usage graph
+                    graph_string = self.core_graphs[i].get_graph_string(self.renderer)
+                    graph_lines = graph_string.rstrip('\n').split('\n')
+                    for line in graph_lines:
+                        core_panel.add_line(line)
                     
-                    # Update temperature graph if graph exists (always show graph, even if temp data missing)
-                    if i < len(self.core_temp_graphs):
-                        if core_temp is not None:
-                            self.core_temp_graphs[i].add_value(core_temp)
-                        # If no temp data, graph will show as gray zeros (prefilled)
+                    # Add percentage and temperature at the bottom
+                    bottom_line_parts = [f"{int(core_usage):3d}%"]
+                    if core_temp is not None:
+                        bottom_line_parts.append(f"{int(round(core_temp))}°C")
+                    bottom_line = " ".join(bottom_line_parts)
+                    core_panel.add_line(bottom_line)
                     
-                    # Create label with bold C and no colon
-                    label_text = f"C{i}"
-                    bold_label_text = ANSIColors.BOLD + "C" + ANSIColors.RESET + label_text[1:]
-                    
-                    # Calculate padding needed
-                    visible_label_len = visible_length(bold_label_text)
-                    padding_needed = max_label_len - visible_label_len
-                    padded_label = bold_label_text + (" " * padding_needed)
-                    
-                    # Build inline elements: padded label (C bold) + usage graph + percentage
-                    inline_elements = [
-                        InlineText(padded_label),
-                        InlineGraph(self.core_graphs[i], renderer=self.renderer),
-                        InlineText(f"{core_usage:3d}%"),
-                    ]
-                    
-                    # Add temperature graph (always show if graph exists) and value (only if temp data available)
-                    if i < len(self.core_temp_graphs):
-                        inline_elements.append(InlineGraph(self.core_temp_graphs[i], renderer=self.renderer, max_size=8))
-                        if core_temp is not None:
-                            inline_elements.append(InlineText(f"{int(round(core_temp))}°C"))
-                    
-                    # Add inline composition
-                    self.subpanel2.add_inline(*inline_elements, renderer=self.renderer)
+                    # Update right label with percentage
+                    core_panel.right_labels = [f"{int(core_usage):3d}%"]
         
         # Update inline panel 1 with overall CPU usage + temp graph + temp text
         cpu_usage = cpu_data.get('overall', 0.0)
@@ -323,13 +349,6 @@ class ProcessorPanel:
             inline_elements.append(InlineText(colored_wattage))
         
         self.inline1.add_inline(*inline_elements, renderer=self.renderer)
-        
-        # Update pipe separator (vertical bar) - fill to match height after layout update
-        self.pipe.clear()
-        pipe_height = max(1, self.pipe.height)
-        gray_pipe = ANSIColors.BRIGHT_BLACK + "│" + ANSIColors.RESET
-        for _ in range(pipe_height):
-            self.pipe.add_line(gray_pipe)
         
         # Update inline panel 2 with GPU info (only if GPU data exists)
         gpu_count = gpu_data.get('count', 0) if gpu_data else 0
