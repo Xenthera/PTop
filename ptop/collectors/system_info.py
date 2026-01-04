@@ -199,6 +199,7 @@ class SystemInfoCollector(BaseCollector):
     def _macos_codename_from_version(self, major_version: int) -> Optional[str]:
         """Map macOS major version to codename."""
         codenames = {
+            26: 'Tahoe',
             15: 'Sequoia',
             14: 'Sonoma',
             13: 'Ventura',
