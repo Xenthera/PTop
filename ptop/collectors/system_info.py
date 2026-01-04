@@ -5,7 +5,7 @@ This module collects static system information that doesn't change during
 application runtime. Data is collected once at startup and cached.
 
 This collector uses Python stdlib, direct filesystem access (/proc, /sys),
-and psutil for cross-platform memory detection. No subprocess calls are used.
+subprocess for platform-specific detection, and psutil for cross-platform memory detection.
 
 NOTE: This panel is static by design - system information (OS, kernel, CPU model,
 hostname, memory, uptime, etc.) doesn't change during application execution.
@@ -20,7 +20,10 @@ import socket
 import sys
 import time
 import glob
-from typing import Dict, Any, Optional
+import subprocess
+import shutil
+import json
+from typing import Dict, Any, Optional, Tuple
 
 try:
     import psutil
@@ -41,20 +44,23 @@ class SystemInfoCollector(BaseCollector):
     - No blocking I/O in render loop
     - Clean separation of collection from rendering
     
-    Collected data:
-    - OS name and version
-    - Kernel version
-    - CPU model
-    - Architecture
-    - Hostname
-    - Total system memory (bytes)
-    - Uptime (seconds)
-    - CPU frequency (MHz, if available)
-    - GPU name (if available)
-    - Default shell
-    - Desktop environment / Window manager (Linux/BSD)
-    - Terminal emulator
-    - Package count (Linux/BSD, if available)
+    Collected data structure:
+    - os: {name, version, codename, arch} - High-resolution OS metadata
+    - host: {model, identifier, details} - High-resolution host/machine metadata
+    - kernel: Kernel version
+    - hostname: System hostname
+    - cpu: CPU model
+    - memory_total: Total system memory (bytes)
+    - uptime: System uptime (seconds)
+    - cpu_freq: CPU frequency (MHz, if available)
+    - gpu: GPU name (if available)
+    - shell: Default shell
+    - de_wm: Desktop environment / Window manager (Linux/BSD)
+    - terminal: Terminal emulator
+    - packages: Package count with manager name
+    - resolution: Display resolution
+    - local_ip: Local IP address
+    - display_server: Display server (Wayland/X11, Linux)
     """
     
     def __init__(self):
@@ -68,33 +74,23 @@ class SystemInfoCollector(BaseCollector):
     
     def _collect_all(self) -> None:
         """Collect all system information and cache it."""
-        # OS name (map Darwin to macOS for display)
         system = platform.system()
-        if system == 'Darwin':
-            self._data['os_name'] = 'macOS'
-        else:
-            self._data['os_name'] = system
         
-        # OS version (platform-specific)
-        if system == 'Darwin':  # macOS
-            # platform.mac_ver() returns (version, ('', '', ''), 'machine')
-            os_version = platform.mac_ver()[0]
-        elif system == 'Linux':
-            # Try /etc/os-release first, fallback to platform
-            os_version = self._read_linux_os_version()
-        elif system == 'Windows':
-            os_version = platform.win32_ver()[0]
-        else:
-            os_version = platform.release()
+        # Collect OS and host metadata using new high-resolution schema
+        os_info = self._collect_os_info(system)
+        host_info = self._collect_host_info(system)
         
-        self._data['os_version'] = os_version
+        # Store new structured schema
+        self._data['os'] = os_info
+        self._data['host'] = host_info
         
-        # Kernel version
+        # Kernel version (keep for backward compatibility)
         uname = os.uname()
-        self._data['kernel'] = uname.release
-        
-        # Architecture
-        self._data['arch'] = platform.machine()
+        kernel_version = uname.release
+        # On macOS/Darwin, prepend "darwin " to match fastfetch format
+        if system == 'Darwin':
+            kernel_version = f"darwin {kernel_version}"
+        self._data['kernel'] = kernel_version
         
         # Hostname
         try:
@@ -137,49 +133,477 @@ class SystemInfoCollector(BaseCollector):
         
         # Display server (Linux - Wayland/X11)
         self._data['display_server'] = self._get_display_server()
-        
-        # Machine/model (laptops/servers)
-        self._data['machine_model'] = self._get_machine_model()
     
-    def _read_linux_os_version(self) -> str:
-        """Read Linux OS version from /etc/os-release (stdlib only)."""
+    def _collect_os_info(self, system: str) -> Dict[str, Any]:
+        """
+        Collect OS information using high-resolution platform-specific methods.
+        
+        Returns:
+            Dictionary with keys: name, version, codename, arch
+        """
+        arch = platform.machine()
+        
+        if system == 'Darwin':
+            return self._collect_macos_os_info(arch)
+        elif system == 'Linux':
+            return self._collect_linux_os_info(arch)
+        elif system == 'Windows':
+            return self._collect_windows_os_info(arch)
+        else:
+            # Fallback for other systems
+            return {
+                'name': system,
+                'version': platform.release(),
+                'codename': None,
+                'arch': arch
+            }
+    
+    def _collect_macos_os_info(self, arch: str) -> Dict[str, Any]:
+        """Collect macOS OS information using sw_vers."""
+        name = 'macOS'
+        version = None
+        codename = None
+        
+        # Use sw_vers for OS version
         try:
+            result = subprocess.run(
+                ['sw_vers', '-productVersion'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip()
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            # Fallback to platform.mac_ver()
+            try:
+                version = platform.mac_ver()[0]
+            except Exception:
+                pass
+        
+        # Derive codename from major version
+        if version:
+            try:
+                major_version = int(version.split('.')[0])
+                codename = self._macos_codename_from_version(major_version)
+            except (ValueError, IndexError):
+                pass
+        
+        return {
+            'name': name,
+            'version': version,
+            'codename': codename,
+            'arch': arch
+        }
+    
+    def _macos_codename_from_version(self, major_version: int) -> Optional[str]:
+        """Map macOS major version to codename."""
+        codenames = {
+            15: 'Sequoia',
+            14: 'Sonoma',
+            13: 'Ventura',
+            12: 'Monterey',
+            11: 'Big Sur',
+            10: 'Catalina',
+        }
+        return codenames.get(major_version)
+    
+    def _collect_linux_os_info(self, arch: str) -> Dict[str, Any]:
+        """Collect Linux OS information from /etc/os-release."""
+        name = None
+        version = None
+        codename = None
+        
+        try:
+            os_release_data = {}
             with open('/etc/os-release', 'r') as f:
                 for line in f:
-                    if line.startswith('PRETTY_NAME='):
-                        # Remove PRETTY_NAME= and quotes
-                        value = line.split('=', 1)[1].strip()
-                        if value.startswith('"') and value.endswith('"'):
-                            value = value[1:-1]
-                        elif value.startswith("'") and value.endswith("'"):
-                            value = value[1:-1]
-                        return value
-                    elif line.startswith('NAME=') and 'os_version' not in self._data:
-                        # Fallback to NAME if PRETTY_NAME not found
-                        value = line.split('=', 1)[1].strip()
-                        if value.startswith('"') and value.endswith('"'):
-                            value = value[1:-1]
-                        elif value.startswith("'") and value.endswith("'"):
-                            value = value[1:-1]
-                        # Try to also get VERSION
-                        try:
-                            with open('/etc/os-release', 'r') as f2:
-                                for line2 in f2:
-                                    if line2.startswith('VERSION='):
-                                        version = line2.split('=', 1)[1].strip()
-                                        if version.startswith('"') and version.endswith('"'):
-                                            version = version[1:-1]
-                                        elif version.startswith("'") and version.endswith("'"):
-                                            version = version[1:-1]
-                                        return f"{value} {version}"
-                        except (IOError, OSError):
-                            pass
-                        return value
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        os_release_data[key] = value
+            
+            # Extract name
+            name = os_release_data.get('NAME') or os_release_data.get('ID', 'Linux')
+            # Clean up name (remove quotes if any)
+            name = name.strip('"').strip("'")
+            
+            # Extract version
+            version = os_release_data.get('VERSION_ID') or os_release_data.get('VERSION')
+            if version:
+                version = version.strip('"').strip("'")
+            
+            # Extract codename
+            codename = os_release_data.get('VERSION_CODENAME') or os_release_data.get('BUILD_ID')
+            if codename:
+                codename = codename.strip('"').strip("'")
         except (IOError, OSError):
             pass
         
-        # Fallback to platform
-        return platform.platform()
+        # Fallback if no data found
+        if not name:
+            name = 'Linux'
+        
+        return {
+            'name': name,
+            'version': version,
+            'codename': codename,
+            'arch': arch
+        }
+    
+    def _collect_windows_os_info(self, arch: str) -> Dict[str, Any]:
+        """Collect Windows OS information."""
+        name = 'Windows'
+        version = None
+        
+        try:
+            version_info = platform.win32_ver()
+            if version_info and len(version_info) > 0:
+                version = version_info[0]
+        except Exception:
+            pass
+        
+        return {
+            'name': name,
+            'version': version,
+            'codename': None,  # Windows doesn't use codenames in the same way
+            'arch': arch
+        }
+    
+    def _collect_host_info(self, system: str) -> Dict[str, Any]:
+        """
+        Collect host/machine information using high-resolution platform-specific methods.
+        
+        Returns:
+            Dictionary with keys: model, identifier, details
+        """
+        if system == 'Darwin':
+            return self._collect_macos_host_info()
+        elif system == 'Linux':
+            return self._collect_linux_host_info()
+        elif system == 'Windows':
+            return self._collect_windows_host_info()
+        else:
+            return {
+                'model': None,
+                'identifier': None,
+                'details': None
+            }
+    
+    def _collect_macos_host_info(self) -> Dict[str, Any]:
+        """Collect macOS host information using system_profiler and sysctl."""
+        model = None
+        identifier = None
+        details_parts = []
+        
+        # Get model name from system_profiler
+        try:
+            result = subprocess.run(
+                ['system_profiler', 'SPHardwareDataType', '-json'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                try:
+                    data = json.loads(result.stdout)
+                    hardware = data.get('SPHardwareDataType', [])
+                    if hardware and len(hardware) > 0:
+                        hw_data = hardware[0]
+                        model = hw_data.get('machine_name') or hw_data.get('model_name')
+                        # Get model identifier (e.g., Mac15,7)
+                        identifier = hw_data.get('machine_model')
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+        
+        # Fallback: Get model identifier from sysctl
+        if not identifier:
+            try:
+                result = subprocess.run(
+                    ['sysctl', '-n', 'hw.model'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0:
+                    identifier = result.stdout.strip()
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+        
+        # Derive details dynamically
+        screen_size = self._derive_screen_size()
+        year = self._derive_release_year(identifier) if identifier else None
+        thunderbolt_info = self._derive_thunderbolt_ports()
+        
+        # Build details parts
+        if screen_size:
+            details_parts.append(screen_size)
+        if year:
+            details_parts.append(year)
+        if thunderbolt_info:
+            details_parts.append(thunderbolt_info)
+        
+        return {
+            'model': model,
+            'identifier': identifier,
+            'details': ', '.join(details_parts) if details_parts else None
+        }
+    
+    def _derive_screen_size(self) -> Optional[str]:
+        """
+        Derive screen size from built-in display native resolution.
+        
+        Uses system_profiler SPDisplaysDataType to get native resolution
+        and maps it to screen size using resolution heuristics.
+        """
+        try:
+            result = subprocess.run(
+                ['system_profiler', 'SPDisplaysDataType', '-json'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                try:
+                    data = json.loads(result.stdout)
+                    displays = data.get('SPDisplaysDataType', [])
+                    
+                    # Find built-in display
+                    for display in displays:
+                        ndrvs = display.get('spdisplays_ndrvs', [])
+                        for ndrv in ndrvs:
+                            if ndrv.get('spdisplays_connection_type') == 'spdisplays_internal':
+                                # Get native resolution from pixelresolution or pixels
+                                pixel_res = ndrv.get('spdisplays_pixelresolution', '')
+                                pixels = ndrv.get('_spdisplays_pixels', '')
+                                
+                                # Parse resolution (e.g., "3456x2234Retina" or "4112 x 2658")
+                                width, height = None, None
+                                
+                                if pixel_res:
+                                    # Extract resolution from string like "3456x2234Retina"
+                                    import re
+                                    match = re.search(r'(\d+)x(\d+)', pixel_res)
+                                    if match:
+                                        width = int(match.group(1))
+                                        height = int(match.group(2))
+                                
+                                if not width or not height:
+                                    # Try parsing from pixels field like "4112 x 2658"
+                                    if pixels:
+                                        import re
+                                        match = re.search(r'(\d+)\s*x\s*(\d+)', pixels)
+                                        if match:
+                                            width = int(match.group(1))
+                                            height = int(match.group(2))
+                                
+                                if width and height:
+                                    # Map resolution to screen size using common resolutions
+                                    # Common Mac resolutions:
+                                    # 16-inch: 3456x2234, 3024x1964
+                                    # 15-inch: 2880x1864
+                                    # 14-inch: 3024x1964, 3024x1890
+                                    # 13-inch: 2560x1600, 2560x1440
+                                    # 24-inch iMac: 4480x2520
+                                    
+                                    if width >= 3440 or (width >= 3000 and height >= 2200):
+                                        return '16-inch'
+                                    elif width >= 2880 and width < 3000:
+                                        return '15-inch'
+                                    elif width >= 3000 and height < 2200:
+                                        return '14-inch'
+                                    elif width >= 2560 and width < 2880:
+                                        return '13-inch'
+                                    elif width >= 4000:
+                                        return '24-inch'
+                except (json.JSONDecodeError, KeyError, IndexError, ValueError):
+                    pass
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+        
+        return None
+    
+    def _derive_release_year(self, identifier: str) -> Optional[str]:
+        """
+        Derive release year/generation from model identifier prefix.
+        
+        Examples:
+        - Mac15,* -> Late 2023
+        - MacBookPro18,* -> Late 2021
+        - Mac14,* -> Early 2023
+        """
+        if not identifier:
+            return None
+        
+        # Extract prefix (e.g., "Mac15" or "MacBookPro18")
+        prefix_match = identifier.split(',')[0] if ',' in identifier else identifier
+        
+        # Map prefix patterns to release periods
+        # This is a simplified mapping based on known patterns
+        year_map = {
+            'Mac15': 'Late 2023',
+            'Mac14': 'Early 2023',
+            'MacBookPro18': 'Late 2021',
+            'MacBookPro17': 'Late 2020',
+            'MacBookPro16': 'Late 2019',
+            'MacBookAir10': 'Late 2020',
+            'MacBookAir9': 'Early 2020',
+            'Mac24': 'Early 2021',
+        }
+        
+        # Find matching prefix (exact match or starts with)
+        for pattern, year in year_map.items():
+            if prefix_match.startswith(pattern):
+                return year
+        
+        # Try to extract number from prefix (e.g., Mac15 -> 15, MacBookPro18 -> 18)
+        # and estimate year (rough heuristic: MacN -> 2000 + N, MacBookProN -> 2000 + N)
+        import re
+        num_match = re.search(r'(\d+)', prefix_match)
+        if num_match:
+            num = int(num_match.group(1))
+            # Very rough heuristic - this is not accurate for all models
+            # Better to extend year_map above for accuracy
+            if 'MacBookPro' in prefix_match or 'MacBookAir' in prefix_match:
+                if num >= 18:
+                    return '2021-2023'
+                elif num >= 16:
+                    return '2019-2021'
+        
+        return None
+    
+    def _derive_thunderbolt_ports(self) -> Optional[str]:
+        """
+        Derive Thunderbolt port count by enumerating Thunderbolt-capable USB-C ports.
+        
+        On Apple Silicon Macs, counts AppleUSB40XHCITypeCPort entries (USB4/Thunderbolt 4 ports).
+        On Intel Macs, attempts to count Thunderbolt controllers via system_profiler.
+        """
+        thunderbolt_count = 0
+        thunderbolt_version = None
+        
+        # On Apple Silicon Macs, count USB4/Thunderbolt 4 ports via IORegistry
+        # AppleUSB40XHCITypeCPort represents USB 4.0 Type-C ports (Thunderbolt 4 compatible)
+        try:
+            result = subprocess.run(
+                ['ioreg', '-p', 'IOService', '-r', '-c', 'AppleUSB40XHCITypeCPort', '-w0'],
+                capture_output=True,
+                text=True,
+                timeout=3
+            )
+            if result.returncode == 0:
+                import re
+                # Count occurrences of AppleUSB40XHCITypeCPort class
+                port_matches = re.findall(r'class AppleUSB40XHCITypeCPort', result.stdout)
+                if port_matches:
+                    thunderbolt_count = len(port_matches)
+                    thunderbolt_version = '4'  # USB4 ports are Thunderbolt 4 compatible
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+        
+        # Fallback: Try system_profiler SPUSBDataType for Intel Macs or if IORegistry didn't work
+        if thunderbolt_count == 0:
+            try:
+                result = subprocess.run(
+                    ['system_profiler', 'SPUSBDataType', '-json'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    try:
+                        data = json.loads(result.stdout)
+                        usb_items = data.get('SPUSBDataType', [])
+                        
+                        # Recursively count Thunderbolt controllers
+                        def count_thunderbolt(items, depth=0):
+                            nonlocal thunderbolt_count, thunderbolt_version
+                            if depth > 10:  # Prevent infinite recursion
+                                return
+                            for item in items:
+                                name = item.get('_name', '').lower()
+                                if 'thunderbolt' in name:
+                                    thunderbolt_count += 1
+                                    # Try to detect version
+                                    if 'thunderbolt 4' in name or 'thunderbolt/usb4' in name or 'usb4' in name:
+                                        thunderbolt_version = '4'
+                                    elif 'thunderbolt 3' in name:
+                                        thunderbolt_version = '3'
+                                # Recursively check children
+                                children = item.get('_items', [])
+                                if children:
+                                    count_thunderbolt(children, depth + 1)
+                        
+                        count_thunderbolt(usb_items)
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+        
+        if thunderbolt_count > 0:
+            # Format port count with version
+            version_str = f" Thunderbolt {thunderbolt_version}" if thunderbolt_version else ""
+            port_str = "port" if thunderbolt_count == 1 else "ports"
+            return f"{thunderbolt_count}{version_str} {port_str}"
+        
+        return None
+    
+    def _collect_linux_host_info(self) -> Dict[str, Any]:
+        """Collect Linux host information from DMI sysfs."""
+        model = None
+        identifier = None
+        details_parts = []
+        
+        # Try /sys/devices/virtual/dmi/id/product_name for model
+        try:
+            with open('/sys/devices/virtual/dmi/id/product_name', 'r') as f:
+                product_name = f.read().strip()
+                if product_name and product_name != 'None' and 'To be filled' not in product_name:
+                    model = product_name
+        except (IOError, OSError):
+            pass
+        
+        # Try /sys/devices/virtual/dmi/id/product_version for version/identifier
+        try:
+            with open('/sys/devices/virtual/dmi/id/product_version', 'r') as f:
+                product_version = f.read().strip()
+                if product_version and product_version != 'None' and 'To be filled' not in product_version:
+                    # If we have both name and version, combine them for model
+                    if model and product_version:
+                        identifier = product_version
+                    elif not model:
+                        model = product_version
+        except (IOError, OSError):
+            pass
+        
+        # Try /sys/devices/virtual/dmi/id/board_name as fallback
+        if not model:
+            try:
+                with open('/sys/devices/virtual/dmi/id/board_name', 'r') as f:
+                    board_name = f.read().strip()
+                    if board_name and board_name != 'None' and 'To be filled' not in board_name:
+                        model = board_name
+            except (IOError, OSError):
+                pass
+        
+        return {
+            'model': model,
+            'identifier': identifier,
+            'details': ', '.join(details_parts) if details_parts else None
+        }
+    
+    def _collect_windows_host_info(self) -> Dict[str, Any]:
+        """Collect Windows host information."""
+        # Windows host info collection would require WMI or similar
+        # For now, return None values
+        return {
+            'model': None,
+            'identifier': None,
+            'details': None
+        }
     
     def _get_cpu_model(self) -> str:
         """Get CPU model using stdlib and direct file access only."""
@@ -980,57 +1404,15 @@ class SystemInfoCollector(BaseCollector):
         
         return None
     
-    def _get_machine_model(self) -> Optional[str]:
-        """
-        Get machine/model name (useful for laptops/servers).
-        
-        Returns model string or None if unavailable.
-        """
-        system = platform.system()
-        
-        if system == 'Linux':
-            # Try /sys/class/dmi/id/product_name
-            try:
-                with open('/sys/class/dmi/id/product_name', 'r') as f:
-                    model = f.read().strip()
-                    if model and model != 'None' and 'To be filled' not in model:
-                        return model
-            except (IOError, OSError):
-                pass
-            
-            # Try /sys/class/dmi/id/product_version
-            try:
-                with open('/sys/class/dmi/id/product_version', 'r') as f:
-                    version = f.read().strip()
-                    if version and version != 'None' and 'To be filled' not in version:
-                        # Combine with product_name if we got it
-                        try:
-                            with open('/sys/class/dmi/id/product_name', 'r') as f2:
-                                name = f2.read().strip()
-                                if name and name != 'None':
-                                    return f"{name} {version}"
-                        except (IOError, OSError):
-                            return version
-            except (IOError, OSError):
-                pass
-        
-        elif system == 'Darwin':  # macOS
-            # macOS system_profiler would require subprocess, so skip for now
-            # Could try to read from IORegistry but it's complex
-            pass
-        
-        return None
-    
     def get_data(self) -> Dict[str, Any]:
         """
         Get cached system information.
         
         Returns:
             Dictionary containing all collected system information:
-            - os_name: OS name (e.g., 'Linux', 'Darwin', 'Windows')
-            - os_version: OS version string
+            - os: {name, version, codename, arch} - High-resolution OS metadata
+            - host: {model, identifier, details} - High-resolution host metadata
             - kernel: Kernel version
-            - arch: Architecture (e.g., 'x86_64', 'arm64')
             - hostname: System hostname
             - cpu: CPU model string
             - memory_total: Total memory in bytes (0 if unknown)
@@ -1044,7 +1426,6 @@ class SystemInfoCollector(BaseCollector):
             - resolution: Display resolution (None if unknown)
             - local_ip: Local IP address (None if unknown)
             - display_server: Display server Wayland/X11 (None if unknown)
-            - machine_model: Machine/model name (None if unknown)
         
         Note: This returns cached data collected at initialization.
         The data never changes during application execution.

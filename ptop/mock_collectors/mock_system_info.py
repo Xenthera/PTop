@@ -104,54 +104,101 @@ class MockSystemInfoCollector(BaseCollector):
         packages_str = ", ".join(package_strings)
         
         # Mock static data based on selected OS (collected once, like real collector)
+        arch = random.choice(['x86_64', 'arm64', 'aarch64'])
+        
         if selected_os == 'Linux':
-            os_data = {
-                'os_name': 'Linux',
-                'os_version': random.choice(['Ubuntu 22.04.3 LTS', 'Arch Linux', 'Fedora 39', 'Debian 12']),
-                'kernel': '5.15.0-91-generic',
-                'de_wm': random.choice(['GNOME 42.5', 'KDE Plasma 5.27', 'XFCE 4.18']),
-                'display_server': random.choice(['X11', 'Wayland']),
+            os_versions = {
+                'Ubuntu 22.04.3 LTS': ('22.04.3', 'Jammy'),
+                'Arch Linux': (None, None),
+                'Fedora 39': ('39', None),
+                'Debian 12': ('12', 'bookworm'),
             }
+            version_key = random.choice(list(os_versions.keys()))
+            version, codename = os_versions[version_key]
+            os_info = {
+                'name': version_key if version_key == 'Arch Linux' else 'Linux',
+                'version': version,
+                'codename': codename,
+                'arch': arch
+            }
+            host_info = {
+                'model': random.choice(['ThinkPad X1 Carbon', 'Dell XPS 13', 'System76 Lemur Pro', None]),
+                'identifier': random.choice(['X1 Carbon Gen 9', None]),
+                'details': None
+            }
+            kernel = '5.15.0-91-generic'
+            de_wm = random.choice(['GNOME 42.5', 'KDE Plasma 5.27', 'XFCE 4.18'])
+            display_server = random.choice(['X11', 'Wayland'])
         elif selected_os == 'macOS':
-            os_data = {
-                'os_name': 'macOS',
-                'os_version': random.choice(['14.2', '13.6', '12.7']),
-                'kernel': '23.1.0',
-                'de_wm': 'Aqua',
-                'display_server': None,
+            macos_versions = {
+                '14.2': ('14.2', 'Sonoma'),
+                '13.6': ('13.6', 'Ventura'),
+                '12.7': ('12.7', 'Monterey'),
             }
+            version_key = random.choice(list(macos_versions.keys()))
+            version, codename = macos_versions[version_key]
+            os_info = {
+                'name': 'macOS',
+                'version': version,
+                'codename': codename,
+                'arch': arch
+            }
+            host_info = {
+                'model': random.choice(['MacBook Pro', 'MacBook Air', 'iMac', 'Mac mini']),
+                'identifier': random.choice(['MacBookPro18,1', 'MacBookAir10,1', 'iMac21,1', 'Macmini9,1']),
+                'details': None
+            }
+            kernel = '23.1.0'
+            de_wm = 'Aqua'
+            display_server = None
         elif selected_os == 'Windows':
-            os_data = {
-                'os_name': 'Windows',
-                'os_version': random.choice(['11', '10']),
-                'kernel': '10.0.22621',
-                'de_wm': 'Windows',
-                'display_server': None,
+            os_info = {
+                'name': 'Windows',
+                'version': random.choice(['11', '10']),
+                'codename': None,
+                'arch': arch
             }
+            host_info = {
+                'model': random.choice(['Surface Pro 9', 'Dell XPS 15', None]),
+                'identifier': None,
+                'details': None
+            }
+            kernel = '10.0.22621'
+            de_wm = 'Windows'
+            display_server = None
         else:  # BSD
-            os_data = {
-                'os_name': selected_os,
-                'os_version': random.choice(['14.0', '13.2', '10.0']),
-                'kernel': selected_os,
-                'de_wm': random.choice(['XFCE', 'KDE', None]),
-                'display_server': random.choice(['X11', None]),
+            os_info = {
+                'name': selected_os,
+                'version': random.choice(['14.0', '13.2', '10.0']),
+                'codename': None,
+                'arch': arch
             }
+            host_info = {
+                'model': None,
+                'identifier': None,
+                'details': None
+            }
+            kernel = selected_os
+            de_wm = random.choice(['XFCE', 'KDE', None])
+            display_server = random.choice(['X11', None])
         
         self._data = {
-            **os_data,
-            'arch': random.choice(['x86_64', 'arm64', 'aarch64']),
+            'os': os_info,
+            'host': host_info,
+            'kernel': kernel,
             'hostname': 'mock-server',
             'cpu': 'Mock Intel Core i7-12700K',
             'memory_total': 32 * 1024 * 1024 * 1024,  # 32 GiB in bytes
             'uptime': None,  # Will be calculated dynamically
             'cpu_freq': 3700.0,  # MHz
             'gpu': 'NVIDIA GeForce RTX 3080',
-            'shell': random.choice(['/bin/bash', '/bin/zsh', '/bin/fish']),
+            'shell': random.choice(['bash', 'zsh', 'fish']),
             'terminal': random.choice(['gnome-terminal', 'alacritty', 'kitty', 'wezterm']),
             'packages': packages_str,
             'resolution': '1920x1080',
             'local_ip': '192.168.1.100',
-            'machine_model': 'Mock Laptop Model XYZ'
+            'de_wm': de_wm,
+            'display_server': display_server
         }
     
     def get_name(self) -> str:

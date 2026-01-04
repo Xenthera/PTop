@@ -52,9 +52,8 @@ class AppLayout:
         self.processor_panel = ProcessorPanel(self.renderer)
         self.system_info_panel = SystemInfoPanel(self.renderer, debug=debug)
         
-        # Create blank panels for bottom row (with borders, no content)
+        # Create blank panel for bottom row (with border, no content)
         self.blank_panel1 = self.renderer.create_panel('blank_panel1')
-        self.blank_panel2 = self.renderer.create_panel('blank_panel2')
         
         # Build layout hierarchy
         # Top row: history, processor (side by side)
@@ -62,10 +61,9 @@ class AppLayout:
         self.top_hlayout.add_panel(self.processor_panel.panel)
         self.root_layout.add_layout(self.top_hlayout)
         
-        # Bottom row: system info panel + 2 blank panels
+        # Bottom row: system info panel + blank panel
         self.bottom_hlayout.add_panel(self.system_info_panel.panel)
         self.bottom_hlayout.add_panel(self.blank_panel1)
-        self.bottom_hlayout.add_panel(self.blank_panel2)
         self.root_layout.add_layout(self.bottom_hlayout)
         
         # Register root layout with renderer

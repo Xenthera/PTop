@@ -181,10 +181,20 @@ class SystemInfoPanel:
         """
         self.panel.clear()
         
-        os_name = data.get('os_name', 'Unknown')
-        os_version = data.get('os_version', 'Unknown')
+        # Extract OS and host info from new structured schema
+        os_info = data.get('os', {})
+        host_info = data.get('host', {})
+        
+        os_name = os_info.get('name', 'Unknown')
+        os_version = os_info.get('version')
+        os_codename = os_info.get('codename')
+        os_arch = os_info.get('arch', 'Unknown')
+        
+        host_model = host_info.get('model')
+        host_identifier = host_info.get('identifier')
+        host_details = host_info.get('details')
+        
         kernel = data.get('kernel', 'Unknown')
-        arch = data.get('arch', 'Unknown')
         hostname = data.get('hostname', 'unknown')
         # Use CPU name from CPU collector if provided, otherwise fall back to system_info
         cpu = cpu_name if cpu_name else data.get('cpu', 'Unknown')
@@ -200,7 +210,6 @@ class SystemInfoPanel:
         resolution = data.get('resolution')
         local_ip = data.get('local_ip')
         display_server = data.get('display_server')
-        machine_model = data.get('machine_model')
         
         # Format lines in fastfetch style: Label: Value
         # Use color for labels, white for values
@@ -210,9 +219,26 @@ class SystemInfoPanel:
         
         lines = []
         
-        # OS and version
-        os_line = f"{label_color}OS{reset}: {value_color}{os_name} {os_version}{reset}"
+        # OS display: format as "macOS Sequoia 15.6.1 (arm64)" or "Linux Ubuntu 22.04 (x86_64)"
+        os_parts = [os_name]
+        if os_codename:
+            os_parts.append(os_codename)
+        if os_version:
+            os_parts.append(os_version)
+        os_display = ' '.join(os_parts)
+        if os_arch:
+            os_display += f" ({os_arch})"
+        os_line = f"{label_color}OS{reset}: {value_color}{os_display}{reset}"
         lines.append(os_line)
+        
+        # Host display: format as "MacBook Pro" or "ThinkPad X1 Carbon" (with details if available)
+        if host_model:
+            host_display_parts = [host_model]
+            if host_details:
+                host_display_parts.append(host_details)
+            host_display = ' — '.join(host_display_parts) if host_details else host_model
+            host_line = f"{label_color}Host{reset}: {value_color}{host_display}{reset}"
+            lines.append(host_line)
         
         # Kernel
         kernel_line = f"{label_color}Kernel{reset}: {value_color}{kernel}{reset}"
@@ -233,9 +259,6 @@ class SystemInfoPanel:
             freq_line = f"{label_color}CPU Freq{reset}: {value_color}{freq_str}{reset}"
             lines.append(freq_line)
         
-        # Architecture
-        arch_line = f"{label_color}Arch{reset}: {value_color}{arch}{reset}"
-        lines.append(arch_line)
         
         # GPU (if available)
         if gpu:
@@ -291,11 +314,6 @@ class SystemInfoPanel:
         if display_server:
             display_line = f"{label_color}Display{reset}: {value_color}{display_server}{reset}"
             lines.append(display_line)
-        
-        # Machine model (if available)
-        if machine_model:
-            model_line = f"{label_color}Model{reset}: {value_color}{machine_model}{reset}"
-            lines.append(model_line)
         
         # Process count (updates live)
         if process_count > 0:
@@ -416,7 +434,14 @@ class SystemInfoPanel:
         # We still track static data hash for potential future optimizations
         static_data = {k: v for k, v in system_info_data.items() if k not in ['memory_total', 'uptime']}
         static_data['cpu_name'] = cpu_name  # Include CPU name in hash
-        data_hash = hash(tuple(sorted(static_data.items())))
+        # Convert dict values to tuples for hashing
+        hashable_items = []
+        for k, v in sorted(static_data.items()):
+            if isinstance(v, dict):
+                hashable_items.append((k, tuple(sorted(v.items()))))
+            else:
+                hashable_items.append((k, v))
+        data_hash = hash(tuple(hashable_items))
         
         # Always render to update live fields (memory, uptime, disk, processes, battery)
         # The renderer's diffing will handle efficient screen updates
