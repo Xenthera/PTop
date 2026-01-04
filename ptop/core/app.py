@@ -28,17 +28,19 @@ class PTopApp:
     - Handles graceful shutdown
     """
     
-    def __init__(self, update_interval: float = 0.05, debug: bool = False):
+    def __init__(self, update_interval: float = 0.05, debug: bool = False, system_info_poll_interval: float = 1.0):
         """
         Initialize the application.
         
         Args:
             update_interval: Time in seconds between updates (default: 0.05)
             debug: If True, use mock collectors with random data instead of real collectors
+            system_info_poll_interval: Time in seconds between re-collecting live system info fields like disks (default: 1.0)
         """
         self.update_interval = update_interval
         self.running = False
         self.debug = debug
+        self.system_info_poll_interval = system_info_poll_interval
         
         # Initialize collectors
         # This is where we'll add more collectors later (memory, disk, etc.)
@@ -81,7 +83,7 @@ class PTopApp:
             
             self.collectors.append(CPUCollector())
             self.collectors.append(GPUCollector())
-            self.collectors.append(SystemInfoCollector())
+            self.collectors.append(SystemInfoCollector(live_poll_interval=self.system_info_poll_interval))
         
         # Future collectors will be added here:
         # self.collectors.append(MemoryCollector())

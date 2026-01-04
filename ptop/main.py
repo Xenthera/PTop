@@ -31,6 +31,8 @@ def main():
                        help='Update interval in seconds (default: 0.05)')
     parser.add_argument('--debug', action='store_true',
                        help='Use mock collectors with random data instead of real hardware')
+    parser.add_argument('--system-info-poll', type=float, default=1.0,
+                       help='System info live fields poll interval in seconds (default: 1.0). Controls how often disk usage, uptime, etc. are refreshed.')
     parser.add_argument('--profile', action='store_true',
                        help='Enable profiling and save results to profile_stats.prof')
     
@@ -44,7 +46,7 @@ def main():
         
         try:
             # Create application instance
-            app = PTopApp(update_interval=args.interval, debug=args.debug)
+            app = PTopApp(update_interval=args.interval, debug=args.debug, system_info_poll_interval=args.system_info_poll)
             # Run the application
             app.run()
         finally:
@@ -64,7 +66,7 @@ def main():
             print("  snakeviz profile_stats.prof")
     else:
         # Create application instance
-        app = PTopApp(update_interval=args.interval, debug=args.debug)
+        app = PTopApp(update_interval=args.interval, debug=args.debug, system_info_poll_interval=args.system_info_poll)
         # Run the application
         app.run()
 

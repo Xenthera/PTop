@@ -163,7 +163,7 @@ class SystemInfoPanel:
         else:
             return f"{int(mhz)} MHz"
     
-    def _render_content(self, data: Dict[str, Any], cpu_name: Optional[str] = None, memory_used: int = 0, memory_total: int = 0, uptime: Optional[float] = None, disk_used: int = 0, disk_total: int = 0, process_count: int = 0, battery_percent: Optional[float] = None, battery_power_plugged: Optional[bool] = None) -> None:
+    def _render_content(self, data: Dict[str, Any], cpu_name: Optional[str] = None, memory_used: int = 0, memory_total: int = 0, uptime: Optional[float] = None, process_count: int = 0, battery_percent: Optional[float] = None, battery_power_plugged: Optional[bool] = None) -> None:
         """
         Render panel content from system info data.
         
@@ -173,8 +173,6 @@ class SystemInfoPanel:
             memory_used: Current memory used in bytes (for live updates)
             memory_total: Total memory in bytes (for live updates)
             uptime: Current system uptime in seconds (for live updates)
-            disk_used: Current disk used in bytes (for live updates)
-            disk_total: Total disk space in bytes (for live updates)
             process_count: Current number of running processes (for live updates)
             battery_percent: Battery percentage if available (for live updates)
             battery_power_plugged: True if AC power is connected, False if on battery, None if no battery (for live updates)
@@ -210,6 +208,7 @@ class SystemInfoPanel:
         resolution = data.get('resolution')
         local_ip = data.get('local_ip')
         display_server = data.get('display_server')
+        disks = data.get('disks', [])
         
         # Format lines in fastfetch style: Label: Value
         # Use color for labels, white for values
@@ -253,13 +252,6 @@ class SystemInfoPanel:
         cpu_line = f"{label_color}CPU{reset}: {value_color}{cpu}{reset}"
         lines.append(cpu_line)
         
-        # CPU frequency (if available)
-        if cpu_freq is not None:
-            freq_str = self._format_frequency(cpu_freq)
-            freq_line = f"{label_color}CPU Freq{reset}: {value_color}{freq_str}{reset}"
-            lines.append(freq_line)
-        
-        
         # GPU (if available)
         if gpu:
             gpu_line = f"{label_color}GPU{reset}: {value_color}{gpu}{reset}"
@@ -269,10 +261,29 @@ class SystemInfoPanel:
         hostname_line = f"{label_color}Host{reset}: {value_color}{hostname}{reset}"
         lines.append(hostname_line)
         
-        # Memory (used/total, updates live) - formatted as x/x (unit) with CPU gradient color
-        memory_str = self._format_memory(memory_used, memory_total, apply_color=True)
-        memory_line = f"{label_color}Memory{reset}: {memory_str}"
-        lines.append(memory_line)
+        # Memory (used/total, updates live) - formatted as x/x (unit) with CPU gradient color on percentage
+        if memory_total > 0:
+            memory_percent = (memory_used / memory_total * 100.0) if memory_total > 0 else 0.0
+            # Format used and total in appropriate units (decimals for GiB, integers for smaller)
+            for unit, suffix in [(1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB")]:
+                if memory_total >= unit:
+                    used_value = memory_used / unit
+                    total_value = memory_total / unit
+                    # Use one decimal for GiB, integers for MiB and smaller
+                    if suffix == "GiB":
+                        used_str = f"{used_value:.1f}/{total_value:.1f}"
+                    else:
+                        used_str = f"{int(round(used_value))}/{int(round(total_value))}"
+                    # Apply CPU gradient color only to the percentage
+                    cpu_colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
+                    color_code = get_gradient_color(cpu_colors, memory_percent, self.renderer._truecolor_support)
+                    colored_percent = f"{color_code}{memory_percent:.0f}%{ANSIColors.RESET}"
+                    memory_str = f"{used_str} ({colored_percent}) ({suffix})"
+                    break
+            else:
+                memory_str = f"{memory_used}/{memory_total} ({memory_percent:.0f}%) (B)"
+            memory_line = f"{label_color}Memory{reset}: {memory_str}"
+            lines.append(memory_line)
         
         # Shell (if available)
         if shell:
@@ -294,11 +305,48 @@ class SystemInfoPanel:
             packages_line = f"{label_color}Packages{reset}: {value_color}{packages}{reset}"
             lines.append(packages_line)
         
-        # Disk usage (used/total, updates live) - formatted as x/x (unit) with CPU gradient color
-        if disk_total > 0:
-            disk_str = self._format_memory(disk_used, disk_total, apply_color=True)
-            disk_line = f"{label_color}Disk{reset}: {disk_str}"
-            lines.append(disk_line)
+        # Disk usage for all mounted volumes (updates live) - formatted like fastfetch
+        if disks:
+            for disk_info in disks:
+                mountpoint = disk_info.get('mountpoint', '')
+                fstype = disk_info.get('fstype', '')
+                used = disk_info.get('used', 0)
+                total = disk_info.get('total', 0)
+                attributes = disk_info.get('attributes', [])
+                
+                if total > 0:
+                    percent = (used / total * 100.0) if total > 0 else 0.0
+                    
+                    # Format used and total in appropriate units (decimals for GiB, integers for smaller)
+                    for unit, suffix in [(1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB")]:
+                        if total >= unit:
+                            used_value = used / unit
+                            total_value = total / unit
+                            # Use one decimal for GiB, integers for MiB and smaller
+                            if suffix == "GiB":
+                                used_str = f"{used_value:.1f} {suffix}"
+                                total_str = f"{total_value:.1f} {suffix}"
+                            else:
+                                used_str = f"{int(round(used_value))} {suffix}"
+                                total_str = f"{int(round(total_value))} {suffix}"
+                            break
+                    else:
+                        used_str = f"{used} B"
+                        total_str = f"{total} B"
+                    
+                    # Apply CPU gradient color only to the percentage number and % sign
+                    cpu_colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
+                    color_code = get_gradient_color(cpu_colors, percent, self.renderer._truecolor_support)
+                    colored_percent = f"{color_code}{percent:.0f}%{ANSIColors.RESET}"
+                    
+                    # Format: "Disk (mountpoint): used / total (percent) - fstype [attributes]"
+                    usage_str = f"{used_str} / {total_str} ({colored_percent})"
+                    attr_str = ', '.join(attributes) if attributes else ''
+                    if attr_str:
+                        disk_line = f"{label_color}Disk ({mountpoint}){reset}: {usage_str} - {value_color}{fstype}{reset} [{attr_str}]"
+                    else:
+                        disk_line = f"{label_color}Disk ({mountpoint}){reset}: {usage_str} - {value_color}{fstype}{reset}"
+                    lines.append(disk_line)
         
         # Resolution (if available)
         if resolution:
@@ -367,8 +415,9 @@ class SystemInfoPanel:
             # No data available yet, skip
             return
         
-        # Get CPU name from CPU collector (uses proper detection logic)
-        cpu_name = cpu_data.get('name_simple') or cpu_data.get('name')
+        # Use CPU string from system_info collector (includes formatted frequency on macOS)
+        # Don't override with CPU collector name since system_info has the formatted version
+        cpu_name = None
         
         # Get current memory usage (live data)
         uptime_seconds = None
@@ -386,17 +435,6 @@ class SystemInfoPanel:
             except Exception:
                 uptime_seconds = None
             
-            # Get disk usage (live data) - use root filesystem
-            # On macOS with APFS, disk.used may exclude purgeable space,
-            # so calculate actual used as total - free for accurate display
-            try:
-                disk = psutil.disk_usage('/')
-                disk_total = disk.total
-                # Calculate actual used space (total - free) to account for APFS purgeable space
-                disk_used = disk.total - disk.free
-            except Exception:
-                disk_used = 0
-                disk_total = 0
             
             # Get process count (live data)
             try:
@@ -423,8 +461,6 @@ class SystemInfoPanel:
             memory_used = 0
             memory_total = system_info_data.get('memory_total', 0)
             uptime_seconds = system_info_data.get('uptime')  # Fall back to cached uptime
-            disk_used = 0
-            disk_total = 0
             process_count = 0
             battery_percent = None
             battery_power_plugged = None
@@ -434,14 +470,7 @@ class SystemInfoPanel:
         # We still track static data hash for potential future optimizations
         static_data = {k: v for k, v in system_info_data.items() if k not in ['memory_total', 'uptime']}
         static_data['cpu_name'] = cpu_name  # Include CPU name in hash
-        # Convert dict values to tuples for hashing
-        hashable_items = []
-        for k, v in sorted(static_data.items()):
-            if isinstance(v, dict):
-                hashable_items.append((k, tuple(sorted(v.items()))))
-            else:
-                hashable_items.append((k, v))
-        data_hash = hash(tuple(hashable_items))
+        
         
         # Always render to update live fields (memory, uptime, disk, processes, battery)
         # The renderer's diffing will handle efficient screen updates
@@ -451,12 +480,9 @@ class SystemInfoPanel:
             memory_used=memory_used, 
             memory_total=memory_total,
             uptime=uptime_seconds,
-            disk_used=disk_used,
-            disk_total=disk_total,
             process_count=process_count,
             battery_percent=battery_percent,
             battery_power_plugged=battery_power_plugged
         )
         self._initialized = True
-        self._last_data_hash = data_hash
 
