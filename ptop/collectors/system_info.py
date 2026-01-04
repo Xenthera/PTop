@@ -1009,21 +1009,23 @@ class SystemInfoCollector(BaseCollector):
     
     def _get_package_count(self) -> Optional[str]:
         """
-        Get package count with package manager name.
+        Get package count with package manager names.
         
-        Detects package managers and counts installed packages:
-        - Linux: pacman (Arch), apt (Debian/Ubuntu), rpm/dnf/yum/zypper (RPM-based), portage (Gentoo), apk (Alpine)
-        - macOS: brew (Homebrew)
+        Detects all available package managers and counts installed packages:
+        - Linux: pacman (Arch), apt (Debian/Ubuntu), rpm/dnf/yum/zypper (RPM-based), portage (Gentoo), apk (Alpine), snap, flatpak
+        - macOS: brew (Homebrew, includes formulas and casks)
         - Windows: winget, chocolatey, scoop
         - FreeBSD: pkg, ports
         - OpenBSD: pkg_add
         - NetBSD: pkgin, pkgsrc
         
-        Returns formatted string like "123 (pacman)" or None if unavailable.
+        Returns formatted string like "1234 (apt), 56 (snap)" or None if unavailable.
         """
         system = platform.system()
         import subprocess
         import shutil
+        
+        package_strings = []
         
         # macOS: Try Homebrew
         if system == 'Darwin':
@@ -1046,6 +1048,10 @@ class SystemInfoCollector(BaseCollector):
                 
                 if brew_cmd:
                     try:
+                        formula_count = 0
+                        cask_count = 0
+                        
+                        # Count formulas
                         result = subprocess.run(
                             [brew_cmd, 'list', '--formula'],
                             capture_output=True,
@@ -1054,17 +1060,31 @@ class SystemInfoCollector(BaseCollector):
                         )
                         if result.returncode == 0:
                             packages = [line for line in result.stdout.strip().split('\n') if line.strip()]
-                            count = len(packages)
-                            if count > 0:
-                                return f"{count} (brew)"
+                            formula_count = len(packages)
+                        
+                        # Count casks
+                        result = subprocess.run(
+                            [brew_cmd, 'list', '--cask'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            packages = [line for line in result.stdout.strip().split('\n') if line.strip()]
+                            cask_count = len(packages)
+                        
+                        # Add formulas and casks as separate entries
+                        if formula_count > 0:
+                            package_strings.append(f"{formula_count} (brew)")
+                        if cask_count > 0:
+                            package_strings.append(f"{cask_count} (brew-cask)")
                     except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
                         pass
             except Exception:
                 pass
-            return None
         
         # Windows: Try winget, chocolatey, scoop
-        if system == 'Windows':
+        elif system == 'Windows':
             try:
                 # Try winget (Windows Package Manager)
                 winget_cmd = shutil.which('winget')
@@ -1077,11 +1097,10 @@ class SystemInfoCollector(BaseCollector):
                             timeout=5
                         )
                         if result.returncode == 0:
-                            # Count non-empty lines (skip header)
                             lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Name')]
                             count = len(lines)
                             if count > 0:
-                                return f"{count} (winget)"
+                                package_strings.append(f"{count} (winget)")
                     except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
                         pass
                 
@@ -1099,7 +1118,7 @@ class SystemInfoCollector(BaseCollector):
                             lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Chocolatey')]
                             count = len(lines)
                             if count > 0:
-                                return f"{count} (chocolatey)"
+                                package_strings.append(f"{count} (chocolatey)")
                     except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
                         pass
                 
@@ -1117,15 +1136,14 @@ class SystemInfoCollector(BaseCollector):
                             lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Name')]
                             count = len(lines)
                             if count > 0:
-                                return f"{count} (scoop)"
+                                package_strings.append(f"{count} (scoop)")
                     except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
                         pass
             except Exception:
                 pass
-            return None
         
         # FreeBSD: Try pkg and ports
-        if system == 'FreeBSD':
+        elif system == 'FreeBSD':
             try:
                 # Try pkg (binary packages)
                 pkg_cmd = shutil.which('pkg')
@@ -1141,25 +1159,23 @@ class SystemInfoCollector(BaseCollector):
                             lines = [line for line in result.stdout.strip().split('\n') if line.strip()]
                             count = len(lines)
                             if count > 0:
-                                return f"{count} (pkg)"
+                                package_strings.append(f"{count} (pkg)")
                     except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
                         pass
                 
                 # Try ports (source packages)
                 ports_db = '/usr/ports'
                 if os.path.isdir(ports_db):
-                    # Count installed ports from /var/db/pkg
                     pkg_db = '/var/db/pkg'
                     if os.path.isdir(pkg_db):
                         count = len([d for d in os.listdir(pkg_db) if os.path.isdir(os.path.join(pkg_db, d))])
                         if count > 0:
-                            return f"{count} (ports)"
+                            package_strings.append(f"{count} (ports)")
             except Exception:
                 pass
-            return None
         
         # OpenBSD: Try pkg_add
-        if system == 'OpenBSD':
+        elif system == 'OpenBSD':
             try:
                 pkg_info_cmd = shutil.which('pkg_info')
                 if pkg_info_cmd:
@@ -1174,15 +1190,14 @@ class SystemInfoCollector(BaseCollector):
                             lines = [line for line in result.stdout.strip().split('\n') if line.strip()]
                             count = len(lines)
                             if count > 0:
-                                return f"{count} (pkg_add)"
+                                package_strings.append(f"{count} (pkg_add)")
                     except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
                         pass
             except Exception:
                 pass
-            return None
         
         # NetBSD: Try pkgin and pkgsrc
-        if system == 'NetBSD':
+        elif system == 'NetBSD':
             try:
                 # Try pkgin (binary packages)
                 pkgin_cmd = shutil.which('pkgin')
@@ -1198,7 +1213,7 @@ class SystemInfoCollector(BaseCollector):
                             lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Reading')]
                             count = len(lines)
                             if count > 0:
-                                return f"{count} (pkgin)"
+                                package_strings.append(f"{count} (pkgin)")
                     except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
                         pass
                 
@@ -1209,139 +1224,180 @@ class SystemInfoCollector(BaseCollector):
                     if os.path.isdir(pkg_db):
                         count = len([d for d in os.listdir(pkg_db) if os.path.isdir(os.path.join(pkg_db, d))])
                         if count > 0:
-                            return f"{count} (pkgsrc)"
+                            package_strings.append(f"{count} (pkgsrc)")
             except Exception:
                 pass
-            return None
         
-        # Linux: Try different package managers
-        try:
-            # Try pacman (Arch) - highest priority for Arch-based systems
+        # Linux: Try different package managers (multiple can coexist)
+        else:
             try:
-                pacman_db = '/var/lib/pacman/local'
-                if os.path.isdir(pacman_db):
-                    count = len([d for d in os.listdir(pacman_db) if os.path.isdir(os.path.join(pacman_db, d))])
-                    if count > 0:
-                        return f"{count} (pacman)"
-            except (IOError, OSError):
-                pass
-            
-            # Try dpkg/apt (Debian/Ubuntu)
-            try:
-                dpkg_db = '/var/lib/dpkg/status'
-                if os.path.exists(dpkg_db):
-                    count = 0
-                    with open(dpkg_db, 'r') as f:
-                        for line in f:
-                            if line.startswith('Package:'):
-                                count += 1
-                    if count > 0:
-                        return f"{count} (apt)"
-            except (IOError, OSError):
-                pass
-            
-            # Try apk (Alpine)
-            try:
-                apk_db = '/lib/apk/db/installed'
-                if os.path.exists(apk_db):
-                    count = 0
-                    with open(apk_db, 'r') as f:
-                        for line in f:
-                            if line.startswith('P:'):
-                                count += 1
-                    if count > 0:
-                        return f"{count} (apk)"
-            except (IOError, OSError):
-                pass
-            
-            # Try dnf (Fedora) - preferred over rpm/yum
-            dnf_cmd = shutil.which('dnf')
-            if dnf_cmd:
+                # Primary package managers (usually only one exists)
+                # Try pacman (Arch)
                 try:
-                    result = subprocess.run(
-                        [dnf_cmd, 'list', 'installed'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    if result.returncode == 0:
-                        lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Installed')]
-                        count = len(lines)
+                    pacman_db = '/var/lib/pacman/local'
+                    if os.path.isdir(pacman_db):
+                        count = len([d for d in os.listdir(pacman_db) if os.path.isdir(os.path.join(pacman_db, d))])
                         if count > 0:
-                            return f"{count} (dnf)"
-                except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                            package_strings.append(f"{count} (pacman)")
+                except (IOError, OSError):
                     pass
-            
-            # Try yum (older Fedora/CentOS)
-            yum_cmd = shutil.which('yum')
-            if yum_cmd:
+                
+                # Try dpkg/apt (Debian/Ubuntu)
                 try:
-                    result = subprocess.run(
-                        [yum_cmd, 'list', 'installed'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    if result.returncode == 0:
-                        lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Installed')]
-                        count = len(lines)
+                    dpkg_db = '/var/lib/dpkg/status'
+                    if os.path.exists(dpkg_db):
+                        count = 0
+                        with open(dpkg_db, 'r') as f:
+                            for line in f:
+                                if line.startswith('Package:'):
+                                    count += 1
                         if count > 0:
-                            return f"{count} (yum)"
-                except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                            package_strings.append(f"{count} (apt)")
+                except (IOError, OSError):
                     pass
-            
-            # Try rpm (RedHat/Fedora) - fallback if dnf/yum not available
-            rpm_cmd = shutil.which('rpm')
-            if rpm_cmd:
+                
+                # Try apk (Alpine)
                 try:
-                    result = subprocess.run(
-                        [rpm_cmd, '-qa'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    if result.returncode == 0:
-                        packages = [line for line in result.stdout.strip().split('\n') if line.strip()]
-                        count = len(packages)
+                    apk_db = '/lib/apk/db/installed'
+                    if os.path.exists(apk_db):
+                        count = 0
+                        with open(apk_db, 'r') as f:
+                            for line in f:
+                                if line.startswith('P:'):
+                                    count += 1
                         if count > 0:
-                            return f"{count} (rpm)"
-                except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                            package_strings.append(f"{count} (apk)")
+                except (IOError, OSError):
                     pass
-            
-            # Try zypper (openSUSE)
-            zypper_cmd = shutil.which('zypper')
-            if zypper_cmd:
+                
+                # Try dnf (Fedora) - preferred over rpm/yum
+                dnf_cmd = shutil.which('dnf')
+                if dnf_cmd:
+                    try:
+                        result = subprocess.run(
+                            [dnf_cmd, 'list', 'installed'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Installed')]
+                            count = len(lines)
+                            if count > 0:
+                                package_strings.append(f"{count} (dnf)")
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+                
+                # Try yum (older Fedora/CentOS)
+                yum_cmd = shutil.which('yum')
+                if yum_cmd:
+                    try:
+                        result = subprocess.run(
+                            [yum_cmd, 'list', 'installed'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Installed')]
+                            count = len(lines)
+                            if count > 0:
+                                package_strings.append(f"{count} (yum)")
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+                
+                # Try rpm (RedHat/Fedora) - fallback if dnf/yum not available
+                rpm_cmd = shutil.which('rpm')
+                if rpm_cmd:
+                    try:
+                        result = subprocess.run(
+                            [rpm_cmd, '-qa'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            packages = [line for line in result.stdout.strip().split('\n') if line.strip()]
+                            count = len(packages)
+                            if count > 0:
+                                package_strings.append(f"{count} (rpm)")
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+                
+                # Try zypper (openSUSE)
+                zypper_cmd = shutil.which('zypper')
+                if zypper_cmd:
+                    try:
+                        result = subprocess.run(
+                            [zypper_cmd, 'search', '-i'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if '|' in line and not line.startswith('S')]
+                            count = len(lines)
+                            if count > 0:
+                                package_strings.append(f"{count} (zypper)")
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+                
+                # Try portage (Gentoo)
                 try:
-                    result = subprocess.run(
-                        [zypper_cmd, 'search', '-i'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    if result.returncode == 0:
-                        lines = [line for line in result.stdout.strip().split('\n') if '|' in line and not line.startswith('S')]
-                        count = len(lines)
+                    portage_db = '/var/db/pkg'
+                    if os.path.isdir(portage_db):
+                        count = 0
+                        for cat in os.listdir(portage_db):
+                            cat_path = os.path.join(portage_db, cat)
+                            if os.path.isdir(cat_path):
+                                count += len([pkg for pkg in os.listdir(cat_path) if os.path.isdir(os.path.join(cat_path, pkg))])
                         if count > 0:
-                            return f"{count} (zypper)"
-                except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                            package_strings.append(f"{count} (portage)")
+                except (IOError, OSError):
                     pass
-            
-            # Try portage (Gentoo) - count categories
-            try:
-                portage_db = '/var/db/pkg'
-                if os.path.isdir(portage_db):
-                    count = 0
-                    for cat in os.listdir(portage_db):
-                        cat_path = os.path.join(portage_db, cat)
-                        if os.path.isdir(cat_path):
-                            count += len([pkg for pkg in os.listdir(cat_path) if os.path.isdir(os.path.join(cat_path, pkg))])
-                    if count > 0:
-                        return f"{count} (portage)"
-            except (IOError, OSError):
+                
+                # Secondary package managers (can coexist with primary)
+                # Try snap
+                snap_cmd = shutil.which('snap')
+                if snap_cmd:
+                    try:
+                        result = subprocess.run(
+                            [snap_cmd, 'list'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip() and not line.startswith('Name')]
+                            count = len(lines)
+                            if count > 0:
+                                package_strings.append(f"{count} (snap)")
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+                
+                # Try flatpak
+                flatpak_cmd = shutil.which('flatpak')
+                if flatpak_cmd:
+                    try:
+                        result = subprocess.run(
+                            [flatpak_cmd, 'list'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            lines = [line for line in result.stdout.strip().split('\n') if line.strip()]
+                            count = len(lines)
+                            if count > 0:
+                                package_strings.append(f"{count} (flatpak)")
+                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        pass
+            except Exception:
                 pass
-        except Exception:
-            pass
         
+        # Format all package managers as comma-separated string
+        if package_strings:
+            return ", ".join(package_strings)
         return None
     
     def _get_resolution(self) -> Optional[str]:
