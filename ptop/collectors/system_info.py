@@ -478,16 +478,19 @@ class SystemInfoCollector(BaseCollector):
     
     def _derive_thunderbolt_ports(self) -> Optional[str]:
         """
-        Derive Thunderbolt port count by enumerating Thunderbolt-capable USB-C ports.
+        Derive Thunderbolt port count by enumerating Thunderbolt controllers and ports.
         
-        On Apple Silicon Macs, counts AppleUSB40XHCITypeCPort entries (USB4/Thunderbolt 4 ports).
-        On Intel Macs, attempts to count Thunderbolt controllers via system_profiler.
+        Detects Thunderbolt 1, 2, 3, and 4 across different Mac models:
+        - Apple Silicon: AppleUSB40XHCITypeCPort (Thunderbolt 4/USB4)
+        - Intel Macs: IOThunderboltFamily controllers, system_profiler SPThunderboltDataType
         """
         thunderbolt_count = 0
         thunderbolt_version = None
         
-        # On Apple Silicon Macs, count USB4/Thunderbolt 4 ports via IORegistry
-        # AppleUSB40XHCITypeCPort represents USB 4.0 Type-C ports (Thunderbolt 4 compatible)
+        import re
+        
+        # Method 1: Try ioreg for Thunderbolt controllers (works for Intel and Apple Silicon)
+        # Check for Thunderbolt 4/USB4 ports on Apple Silicon
         try:
             result = subprocess.run(
                 ['ioreg', '-p', 'IOService', '-r', '-c', 'AppleUSB40XHCITypeCPort', '-w0'],
@@ -496,8 +499,6 @@ class SystemInfoCollector(BaseCollector):
                 timeout=3
             )
             if result.returncode == 0:
-                import re
-                # Count occurrences of AppleUSB40XHCITypeCPort class
                 port_matches = re.findall(r'class AppleUSB40XHCITypeCPort', result.stdout)
                 if port_matches:
                     thunderbolt_count = len(port_matches)
@@ -505,7 +506,83 @@ class SystemInfoCollector(BaseCollector):
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
         
-        # Fallback: Try system_profiler SPUSBDataType for Intel Macs or if IORegistry didn't work
+        # Method 2: Try ioreg for Thunderbolt controllers (Thunderbolt 1, 2, 3 on Intel Macs)
+        if thunderbolt_count == 0:
+            try:
+                result = subprocess.run(
+                    ['ioreg', '-p', 'IOService', '-r', '-c', 'IOThunderboltController', '-w0'],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
+                if result.returncode == 0:
+                    # Count Thunderbolt controllers
+                    controller_matches = re.findall(r'class IOThunderboltController', result.stdout)
+                    if controller_matches:
+                        thunderbolt_count = len(controller_matches)
+                        # Try to detect version from controller properties
+                        # Thunderbolt 1/2 controllers often show up as IOThunderboltController
+                        # We'll try to get version from system_profiler if available
+                        thunderbolt_version = None  # Will be detected below if possible
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+        
+        # Method 3: Try system_profiler SPThunderboltDataType (best for version detection)
+        if thunderbolt_count == 0 or thunderbolt_version is None:
+            try:
+                result = subprocess.run(
+                    ['system_profiler', 'SPThunderboltDataType', '-json'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    try:
+                        data = json.loads(result.stdout)
+                        thunderbolt_items = data.get('SPThunderboltDataType', [])
+                        
+                        if thunderbolt_items:
+                            # Count Thunderbolt controllers/buses
+                            controllers_found = 0
+                            detected_version = None
+                            
+                            def count_thunderbolt_items(items, depth=0):
+                                nonlocal controllers_found, detected_version
+                                if depth > 10:
+                                    return
+                                for item in items:
+                                    name = item.get('_name', '').lower()
+                                    # Look for controller or bus entries
+                                    if 'thunderbolt' in name and ('controller' in name or 'bus' in name):
+                                        controllers_found += 1
+                                    # Try to detect version from name or version field
+                                    version_field = item.get('spthunderbolt_version', '').lower()
+                                    name_lower = name.lower()
+                                    if 'thunderbolt 4' in name_lower or 'thunderbolt/usb4' in name_lower or 'usb4' in name_lower or '4' in version_field:
+                                        detected_version = '4'
+                                    elif 'thunderbolt 3' in name_lower or '3' in version_field:
+                                        detected_version = '3'
+                                    elif 'thunderbolt 2' in name_lower or '2' in version_field:
+                                        detected_version = '2'
+                                    elif 'thunderbolt 1' in name_lower or '1' in version_field:
+                                        detected_version = '1'
+                                    # Recursively check children
+                                    children = item.get('_items', [])
+                                    if children:
+                                        count_thunderbolt_items(children, depth + 1)
+                            
+                            count_thunderbolt_items(thunderbolt_items)
+                            
+                            if controllers_found > 0:
+                                thunderbolt_count = controllers_found
+                                if detected_version:
+                                    thunderbolt_version = detected_version
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+        
+        # Method 4: Fallback to system_profiler SPUSBDataType (for older systems)
         if thunderbolt_count == 0:
             try:
                 result = subprocess.run(
@@ -522,17 +599,21 @@ class SystemInfoCollector(BaseCollector):
                         # Recursively count Thunderbolt controllers
                         def count_thunderbolt(items, depth=0):
                             nonlocal thunderbolt_count, thunderbolt_version
-                            if depth > 10:  # Prevent infinite recursion
+                            if depth > 10:
                                 return
                             for item in items:
                                 name = item.get('_name', '').lower()
                                 if 'thunderbolt' in name:
                                     thunderbolt_count += 1
-                                    # Try to detect version
+                                    # Try to detect version from name
                                     if 'thunderbolt 4' in name or 'thunderbolt/usb4' in name or 'usb4' in name:
                                         thunderbolt_version = '4'
                                     elif 'thunderbolt 3' in name:
                                         thunderbolt_version = '3'
+                                    elif 'thunderbolt 2' in name:
+                                        thunderbolt_version = '2'
+                                    elif 'thunderbolt 1' in name:
+                                        thunderbolt_version = '1'
                                 # Recursively check children
                                 children = item.get('_items', [])
                                 if children:
