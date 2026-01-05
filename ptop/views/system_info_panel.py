@@ -17,32 +17,19 @@ The double-buffering renderer ensures minimal screen writes, only updating chang
 lines for efficiency.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 from ..ui.ansi_renderer import ANSIRendererBase
 from ..ui.colors import ANSIColors, get_gradient_color
+from ..ui.utils import visible_length
 
 
 class SystemInfoPanel:
     """
     Controller for the system information panel.
     
-    This panel displays static system information in a fastfetch-style format:
-    - OS name and version
-    - Kernel version
-    - CPU model
-    - Architecture
-    - Hostname
-    - Total system memory
-    - Uptime
-    - CPU frequency (if available)
-    - GPU (if available)
-    - Shell
-    - Desktop environment/Window manager (Linux/BSD)
-    - Terminal emulator
-    - Package count (Linux/BSD, if available)
-    
-    The panel is static - content is set once and only re-renders on resize
-    or explicit force redraw to handle text re-wrapping.
+    This panel displays system information in a fastfetch-style format.
+    Most fields are static (OS, kernel, CPU, GPU, etc.) but some update live
+    (uptime, memory, disks, battery, process count) at a 2-second interval.
     """
     
     def __init__(self, renderer: ANSIRendererBase, debug: bool = False):
@@ -56,8 +43,7 @@ class SystemInfoPanel:
         self.renderer = renderer
         self.debug = debug
         self.panel = None
-        self._initialized = False
-        self._last_data_hash = None
+        self._battery_model_name: Optional[str] = None  # Cache battery model name (static)
         
         self._setup_panel()
     
@@ -75,47 +61,6 @@ class SystemInfoPanel:
         """Update panel layout bounds (no-op for this simple panel)."""
         # This panel doesn't have nested layouts, so nothing to update
         pass
-    
-    def _format_memory(self, used_bytes: int, total_bytes: int, apply_color: bool = False) -> str:
-        """
-        Format memory used/total into human-readable string.
-        
-        Args:
-            used_bytes: Memory used in bytes
-            total_bytes: Total memory in bytes
-            apply_color: If True, apply CPU gradient color based on percentage
-            
-        Returns:
-            Formatted string (e.g., "8.0/16.0 (GiB)", "512/1024 (MiB)")
-        """
-        if total_bytes == 0:
-            return "Unknown"
-        
-        # Calculate percentage for color gradient
-        percent = (used_bytes / total_bytes * 100.0) if total_bytes > 0 else 0.0
-        
-        # Format both used and total in appropriate unit
-        for unit, suffix in [(1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB")]:
-            if total_bytes >= unit:
-                used_value = used_bytes / unit
-                total_value = total_bytes / unit
-                formatted = f"{used_value:.1f}/{total_value:.1f} ({suffix})"
-                
-                # Apply CPU gradient color if requested
-                if apply_color:
-                    cpu_colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
-                    color_code = get_gradient_color(cpu_colors, percent, self.renderer._truecolor_support)
-                    return f"{color_code}{formatted}{ANSIColors.RESET}"
-                else:
-                    return formatted
-        
-        formatted = f"{used_bytes}/{total_bytes} (B)"
-        if apply_color:
-            cpu_colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
-            color_code = get_gradient_color(cpu_colors, percent, self.renderer._truecolor_support)
-            return f"{color_code}{formatted}{ANSIColors.RESET}"
-        else:
-            return formatted
     
     def _format_uptime(self, seconds: Optional[float]) -> str:
         """
@@ -163,19 +108,78 @@ class SystemInfoPanel:
         else:
             return f"{int(mhz)} MHz"
     
-    def _render_content(self, data: Dict[str, Any], cpu_name: Optional[str] = None, memory_used: int = 0, memory_total: int = 0, uptime: Optional[float] = None, process_count: int = 0, battery_percent: Optional[float] = None, battery_power_plugged: Optional[bool] = None) -> None:
+    def _format_time_remaining(self, seconds: Optional[float]) -> Optional[str]:
+        """
+        Format battery time remaining in seconds to human-readable string.
+        
+        Args:
+            seconds: Time remaining in seconds (None if unknown/calculating)
+            
+        Returns:
+            Formatted string (e.g., "6 hours, 22 mins remaining") or None if unknown
+        """
+        if seconds is None or seconds < 0:
+            return None
+        
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        
+        parts = []
+        if hours > 0:
+            parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+        if minutes > 0 or not parts:
+            parts.append(f"{minutes} min{'s' if minutes != 1 else ''}")
+        
+        return ", ".join(parts) + " remaining"
+    
+    def _get_battery_model_name(self) -> Optional[str]:
+        """
+        Get battery model name (macOS-specific using system_profiler).
+        
+        Returns:
+            Battery model name (e.g., "bq40z651") or None if not available
+        """
+        try:
+            import platform
+            if platform.system() != 'Darwin':
+                return None
+            
+            import subprocess
+            import re
+            
+            result = subprocess.run(
+                ['system_profiler', 'SPPowerDataType'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0:
+                # Look for "Device Name:" line in the output
+                for line in result.stdout.split('\n'):
+                    if 'Device Name:' in line:
+                        # Extract model name (format: "          Device Name: bq40z651")
+                        match = re.search(r'Device Name:\s*(.+)', line)
+                        if match:
+                            model_name = match.group(1).strip()
+                            return model_name if model_name else None
+        except Exception:
+            pass
+        
+        return None
+    
+    def _render_content(self, data: Dict[str, Any], memory_used: int = 0, memory_total: int = 0, uptime: Optional[float] = None, process_count: int = 0, battery_percent: Optional[float] = None, battery_power_plugged: Optional[bool] = None, battery_secsleft: Optional[float] = None) -> None:
         """
         Render panel content from system info data.
         
         Args:
             data: System information dictionary from collector
-            cpu_name: CPU name from CPU collector (optional, overrides data['cpu'])
             memory_used: Current memory used in bytes (for live updates)
             memory_total: Total memory in bytes (for live updates)
             uptime: Current system uptime in seconds (for live updates)
             process_count: Current number of running processes (for live updates)
             battery_percent: Battery percentage if available (for live updates)
             battery_power_plugged: True if AC power is connected, False if on battery, None if no battery (for live updates)
+            battery_secsleft: Battery time remaining in seconds if available (for live updates)
         """
         self.panel.clear()
         
@@ -189,17 +193,11 @@ class SystemInfoPanel:
         os_arch = os_info.get('arch', 'Unknown')
         
         host_model = host_info.get('model')
-        host_identifier = host_info.get('identifier')
         host_details = host_info.get('details')
         
         kernel = data.get('kernel', 'Unknown')
         hostname = data.get('hostname', 'unknown')
-        # Use CPU name from CPU collector if provided, otherwise fall back to system_info
-        cpu = cpu_name if cpu_name else data.get('cpu', 'Unknown')
-        # Use provided uptime (live) or fall back to cached data if not provided
-        if uptime is None:
-            uptime = data.get('uptime')
-        cpu_freq = data.get('cpu_freq')
+        cpu = data.get('cpu', 'Unknown')
         gpu = data.get('gpu')
         shell = data.get('shell')
         de_wm = data.get('de_wm')
@@ -216,7 +214,8 @@ class SystemInfoPanel:
         value_color = ANSIColors.BRIGHT_WHITE
         reset = ANSIColors.RESET
         
-        lines = []
+        # Collect all label-value pairs first
+        label_value_pairs: List[Tuple[str, str]] = []
         
         # OS display: format as "macOS Sequoia 15.6.1 (arm64)" or "Linux Ubuntu 22.04 (x86_64)"
         os_parts = [os_name]
@@ -227,8 +226,7 @@ class SystemInfoPanel:
         os_display = ' '.join(os_parts)
         if os_arch:
             os_display += f" ({os_arch})"
-        os_line = f"{label_color}OS{reset}: {value_color}{os_display}{reset}"
-        lines.append(os_line)
+        label_value_pairs.append(("OS", f"{value_color}{os_display}{reset}"))
         
         # Host display: format as "MacBook Pro" or "ThinkPad X1 Carbon" (with details if available)
         if host_model:
@@ -236,34 +234,28 @@ class SystemInfoPanel:
             if host_details:
                 host_display_parts.append(host_details)
             host_display = ' — '.join(host_display_parts) if host_details else host_model
-            host_line = f"{label_color}Host{reset}: {value_color}{host_display}{reset}"
-            lines.append(host_line)
+            label_value_pairs.append(("Host", f"{value_color}{host_display}{reset}"))
         
         # Kernel
-        kernel_line = f"{label_color}Kernel{reset}: {value_color}{kernel}{reset}"
-        lines.append(kernel_line)
+        label_value_pairs.append(("Kernel", f"{value_color}{kernel}{reset}"))
         
         # Uptime
         uptime_str = self._format_uptime(uptime)
-        uptime_line = f"{label_color}Uptime{reset}: {value_color}{uptime_str}{reset}"
-        lines.append(uptime_line)
+        label_value_pairs.append(("Uptime", f"{value_color}{uptime_str}{reset}"))
         
         # CPU
-        cpu_line = f"{label_color}CPU{reset}: {value_color}{cpu}{reset}"
-        lines.append(cpu_line)
+        label_value_pairs.append(("CPU", f"{value_color}{cpu}{reset}"))
         
         # GPU (if available)
         if gpu:
-            gpu_line = f"{label_color}GPU{reset}: {value_color}{gpu}{reset}"
-            lines.append(gpu_line)
+            label_value_pairs.append(("GPU", f"{value_color}{gpu}{reset}"))
         
         # Hostname
-        hostname_line = f"{label_color}Host{reset}: {value_color}{hostname}{reset}"
-        lines.append(hostname_line)
+        label_value_pairs.append(("Host", f"{value_color}{hostname}{reset}"))
         
         # Memory (used/total, updates live) - formatted as x/x (unit) with CPU gradient color on percentage
         if memory_total > 0:
-            memory_percent = (memory_used / memory_total * 100.0) if memory_total > 0 else 0.0
+            memory_percent = (memory_used / memory_total * 100.0)
             # Format used and total in appropriate units (decimals for GiB, integers for smaller)
             for unit, suffix in [(1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB")]:
                 if memory_total >= unit:
@@ -282,28 +274,23 @@ class SystemInfoPanel:
                     break
             else:
                 memory_str = f"{memory_used}/{memory_total} ({memory_percent:.0f}%) (B)"
-            memory_line = f"{label_color}Memory{reset}: {memory_str}"
-            lines.append(memory_line)
+            label_value_pairs.append(("Memory", memory_str))
         
         # Shell (if available)
         if shell:
-            shell_line = f"{label_color}Shell{reset}: {value_color}{shell}{reset}"
-            lines.append(shell_line)
+            label_value_pairs.append(("Shell", f"{value_color}{shell}{reset}"))
         
         # Desktop environment / Window manager (if available)
         if de_wm:
-            de_wm_line = f"{label_color}DE/WM{reset}: {value_color}{de_wm}{reset}"
-            lines.append(de_wm_line)
+            label_value_pairs.append(("DE/WM", f"{value_color}{de_wm}{reset}"))
         
         # Terminal (if available)
         if terminal:
-            terminal_line = f"{label_color}Terminal{reset}: {value_color}{terminal}{reset}"
-            lines.append(terminal_line)
+            label_value_pairs.append(("Terminal", f"{value_color}{terminal}{reset}"))
         
         # Package count (if available)
         if packages is not None:
-            packages_line = f"{label_color}Packages{reset}: {value_color}{packages}{reset}"
-            lines.append(packages_line)
+            label_value_pairs.append(("Packages", f"{value_color}{packages}{reset}"))
         
         # Disk usage for all mounted volumes (updates live) - formatted like fastfetch
         if disks:
@@ -343,54 +330,80 @@ class SystemInfoPanel:
                     usage_str = f"{used_str} / {total_str} ({colored_percent})"
                     attr_str = ', '.join(attributes) if attributes else ''
                     if attr_str:
-                        disk_line = f"{label_color}Disk ({mountpoint}){reset}: {usage_str} - {value_color}{fstype}{reset} [{attr_str}]"
+                        disk_value = f"{usage_str} - {value_color}{fstype}{reset} [{attr_str}]"
                     else:
-                        disk_line = f"{label_color}Disk ({mountpoint}){reset}: {usage_str} - {value_color}{fstype}{reset}"
-                    lines.append(disk_line)
+                        disk_value = f"{usage_str} - {value_color}{fstype}{reset}"
+                    label_value_pairs.append((f"Disk ({mountpoint})", disk_value))
         
-        # Resolution (if available)
+        # Display (if available) - fastfetch-style format includes name, resolution, scale, size, refresh rate
         if resolution:
-            resolution_line = f"{label_color}Resolution{reset}: {value_color}{resolution}{reset}"
-            lines.append(resolution_line)
+            # Resolution now contains the full fastfetch-style format, so we just display it
+            label_value_pairs.append(("Display", f"{value_color}{resolution}{reset}"))
         
         # Local IP (if available)
         if local_ip:
-            ip_line = f"{label_color}Local IP{reset}: {value_color}{local_ip}{reset}"
-            lines.append(ip_line)
+            label_value_pairs.append(("Local IP", f"{value_color}{local_ip}{reset}"))
         
         # Display server (if available, Linux)
         if display_server:
-            display_line = f"{label_color}Display{reset}: {value_color}{display_server}{reset}"
-            lines.append(display_line)
+            label_value_pairs.append(("Display", f"{value_color}{display_server}{reset}"))
         
         # Process count (updates live)
         if process_count > 0:
-            process_line = f"{label_color}Processes{reset}: {value_color}{process_count}{reset}"
-            lines.append(process_line)
+            label_value_pairs.append(("Processes", f"{value_color}{process_count}{reset}"))
         
-        # Battery (if available, updates live) - percentage uses gradient, status words are colored in parens
+        # Battery (if available, updates live) - format: "Battery (model): percent (time remaining) [Status]"
         if battery_percent is not None:
+            # Get battery model name (cached, only retrieved once)
+            if self._battery_model_name is None:
+                self._battery_model_name = self._get_battery_model_name()
+            battery_model = self._battery_model_name
+            
+            # Format battery label: "Battery (model)" or just "Battery"
+            battery_label = f"Battery ({battery_model})" if battery_model else "Battery"
+            
             # Percentage uses gradient color based on battery level
             cpu_colors = [ANSIColors.BRIGHT_GREEN, ANSIColors.BRIGHT_YELLOW, ANSIColors.BRIGHT_RED]
             percent_color_code = get_gradient_color(cpu_colors, battery_percent, self.renderer._truecolor_support)
             percent_str = f"{battery_percent:.0f}%"
             
-            # Build the full battery string with separate colors for percentage and status
+            # Format time remaining
+            time_remaining_str = None
+            if battery_secsleft is not None:
+                time_remaining_str = self._format_time_remaining(battery_secsleft)
+            
+            # Build the full battery string: "percent (time remaining) [Status]"
+            battery_parts = [f"{percent_color_code}{percent_str}{ANSIColors.RESET}"]
+            
+            if time_remaining_str:
+                battery_parts.append(f"({time_remaining_str})")
+            
+            # Add status
             if battery_power_plugged is not None:
                 if battery_power_plugged:
-                    status_word = "charging"
+                    status_word = "Charging"
                     status_color = ANSIColors.BRIGHT_GREEN
                 else:
-                    status_word = "draining"
+                    status_word = "Discharging"
                     status_color = ANSIColors.BRIGHT_RED
-                # Parentheses are white, status word is colored
-                battery_str = f"{percent_color_code}{percent_str}{ANSIColors.RESET} {value_color}({status_color}{status_word}{value_color}){ANSIColors.RESET}"
-            else:
-                # If power status is unknown, just show percentage with gradient
-                battery_str = f"{percent_color_code}{percent_str}{ANSIColors.RESET}"
+                battery_parts.append(f"{value_color}[{status_color}{status_word}{value_color}]{ANSIColors.RESET}")
             
-            battery_line = f"{label_color}Battery{reset}: {battery_str}"
-            lines.append(battery_line)
+            battery_str = " ".join(battery_parts)
+            
+            label_value_pairs.append((battery_label, battery_str))
+        
+        # Find the longest label (without ANSI codes)
+        max_label_len = max(visible_length(label) for label, _ in label_value_pairs) if label_value_pairs else 0
+        
+        # Format all lines with aligned values
+        lines = []
+        for label, value in label_value_pairs:
+            # Pad label to max length
+            label_len = visible_length(label)
+            padded_label = label + ' ' * (max_label_len - label_len)
+            # Format: "Label : Value"
+            line = f"{label_color}{padded_label}{reset}: {value}"
+            lines.append(line)
         
         # Add all lines to panel
         for line in lines:
@@ -402,87 +415,30 @@ class SystemInfoPanel:
         
         Args:
             metrics: Dictionary of metrics from collectors
-            force: If True, force update even if already initialized
-            
-        Note: This panel is mostly static, but memory, uptime, disk, processes, and battery update live.
-        Most system information doesn't change during application execution,
-        but these live metrics do, so we always re-render to show current values.
+            force: Unused (kept for API compatibility)
         """
         system_info_data = metrics.get('system_info', {})
-        cpu_data = metrics.get('cpu', {})
         
-        if not system_info_data:
-            # No data available yet, skip
-            return
+        # Get all live values from system_info (updated at 2s interval)
+        memory_used = system_info_data.get('memory_used', 0)
+        memory_total = system_info_data.get('memory_total', 0)
+        uptime = system_info_data.get('uptime')
+        process_count = system_info_data.get('process_count', 0)
         
-        # Use CPU string from system_info collector (includes formatted frequency on macOS)
-        # Don't override with CPU collector name since system_info has the formatted version
-        cpu_name = None
+        # Get battery data from system_info
+        battery_data = system_info_data.get('battery')
+        battery_percent = battery_data.get('percent') if battery_data else None
+        battery_power_plugged = battery_data.get('power_plugged') if battery_data else None
+        battery_secsleft = battery_data.get('secsleft') if battery_data else None
         
-        # Get current memory usage (live data)
-        uptime_seconds = None
-        try:
-            import psutil
-            import time
-            mem = psutil.virtual_memory()
-            memory_used = mem.used
-            memory_total = mem.total
-            
-            # Get system uptime (live data)
-            try:
-                boot_time = psutil.boot_time()
-                uptime_seconds = time.time() - boot_time
-            except Exception:
-                uptime_seconds = None
-            
-            
-            # Get process count (live data)
-            try:
-                process_count = len(psutil.pids())
-            except Exception:
-                process_count = 0
-            
-            # Get battery status (live data, if available)
-            # Skip battery detection in debug mode to test "no battery" scenario
-            battery_percent = None
-            battery_power_plugged = None
-            if not self.debug:
-                try:
-                    battery = psutil.sensors_battery()
-                    if battery is not None:
-                        battery_percent = battery.percent
-                        battery_power_plugged = battery.power_plugged
-                except (AttributeError, Exception):
-                    # psutil.sensors_battery() might not be available on all systems
-                    battery_percent = None
-                    battery_power_plugged = None
-        except Exception:
-            # Fallback to static data if psutil fails
-            memory_used = 0
-            memory_total = system_info_data.get('memory_total', 0)
-            uptime_seconds = system_info_data.get('uptime')  # Fall back to cached uptime
-            process_count = 0
-            battery_percent = None
-            battery_power_plugged = None
-        
-        # Always update since we have live data (memory, uptime, disk, processes, battery)
-        # The double-buffering renderer will efficiently only update changed lines
-        # We still track static data hash for potential future optimizations
-        static_data = {k: v for k, v in system_info_data.items() if k not in ['memory_total', 'uptime']}
-        static_data['cpu_name'] = cpu_name  # Include CPU name in hash
-        
-        
-        # Always render to update live fields (memory, uptime, disk, processes, battery)
-        # The renderer's diffing will handle efficient screen updates
+        # Render content
         self._render_content(
-            system_info_data, 
-            cpu_name=cpu_name, 
-            memory_used=memory_used, 
+            system_info_data,
+            memory_used=memory_used,
             memory_total=memory_total,
-            uptime=uptime_seconds,
+            uptime=uptime,
             process_count=process_count,
             battery_percent=battery_percent,
-            battery_power_plugged=battery_power_plugged
+            battery_power_plugged=battery_power_plugged,
+            battery_secsleft=battery_secsleft
         )
-        self._initialized = True
-

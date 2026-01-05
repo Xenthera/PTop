@@ -330,4 +330,21 @@ class WindowsSystemInfoCollector(PlatformSystemInfoCollectorBase):
             pass
         
         return disks
+    
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Windows using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
 

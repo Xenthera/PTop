@@ -11,6 +11,7 @@ import re
 import os
 import shutil
 import ctypes
+import plistlib
 from ctypes import util
 from typing import Dict, Any, Optional
 
@@ -506,45 +507,134 @@ class MacOSSystemInfoCollector(PlatformSystemInfoCollectorBase):
         return None
     
     def get_resolution(self) -> Optional[str]:
-        """Get primary display resolution using CoreGraphics."""
+        """
+        Get primary display information in fastfetch-style format:
+        'Display (Color LCD): 4112x2658 @ 2x in 16", 120 Hz [Built-in]'
+        """
         try:
-            # Try to load CoreGraphics framework
+            import plistlib
+            
+            # Get display info from system_profiler XML output
+            result = subprocess.run(
+                ['system_profiler', 'SPDisplaysDataType', '-xml'],
+                capture_output=True,
+                text=False,
+                timeout=5
+            )
+            if result.returncode != 0:
+                return None
+            
             try:
-                core_graphics = ctypes.CDLL(util.find_library('CoreGraphics'))
-            except (OSError, AttributeError):
-                # Try direct path as fallback
-                try:
-                    core_graphics = ctypes.CDLL('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
-                except OSError:
+                plist = plistlib.loads(result.stdout)
+                if not plist or len(plist) == 0 or '_items' not in plist[0]:
                     return None
-            
-            # Get main display ID
-            kCGDirectMainDisplay = 1
-            
-            # CGDisplayBounds signature: CGRect CGDisplayBounds(CGDirectDisplayID display)
-            # CGRect is a struct with {x, y, width, height} as doubles
-            class CGRect(ctypes.Structure):
-                _fields_ = [
-                    ('x', ctypes.c_double),
-                    ('y', ctypes.c_double),
-                    ('width', ctypes.c_double),
-                    ('height', ctypes.c_double),
-                ]
-            
-            # Get function
-            CGDisplayBounds = core_graphics.CGDisplayBounds
-            CGDisplayBounds.argtypes = [ctypes.c_uint32]
-            CGDisplayBounds.restype = CGRect
-            
-            # Get bounds of main display
-            bounds = CGDisplayBounds(kCGDirectMainDisplay)
-            
-            # Extract width and height (use int() to remove decimals)
-            width = int(bounds.width)
-            height = int(bounds.height)
-            
-            if width > 0 and height > 0:
-                return f"{width}x{height}"
+                
+                items = plist[0]['_items']
+                for item in items:
+                    if 'spdisplays_ndrvs' not in item:
+                        continue
+                    
+                    displays = item['spdisplays_ndrvs']
+                    # Find the main display (usually the first one)
+                    for display in displays:
+                        # Get display name
+                        name = display.get('_name', '')
+                        if not name:
+                            continue
+                        
+                        # Get physical pixels (e.g., "4112 x 2658")
+                        pixels = display.get('_spdisplays_pixels', '')
+                        if not pixels or 'x' not in pixels:
+                            continue
+                        
+                        pixel_parts = pixels.split('x')
+                        if len(pixel_parts) != 2:
+                            continue
+                        
+                        physical_width = pixel_parts[0].strip()
+                        physical_height = pixel_parts[1].strip()
+                        
+                        # Get resolution string (e.g., "2056 x 1329 @ 120.00Hz")
+                        resolution_str = display.get('_spdisplays_resolution', '')
+                        refresh_hz = None
+                        scale = 1
+                        
+                        if '@' in resolution_str:
+                            # Extract refresh rate
+                            refresh_part = resolution_str.split('@')[1].strip()
+                            refresh_hz_str = refresh_part.replace('Hz', '').strip()
+                            try:
+                                refresh_hz = float(refresh_hz_str)
+                            except ValueError:
+                                pass
+                            
+                            # Calculate scale factor from logical/physical resolution
+                            logical_part = resolution_str.split('@')[0].strip()
+                            if 'x' in logical_part:
+                                logical_parts = logical_part.split('x')
+                                if len(logical_parts) == 2:
+                                    try:
+                                        logical_width = int(logical_parts[0].strip())
+                                        physical_width_int = int(physical_width)
+                                        if logical_width > 0:
+                                            scale = int(round(physical_width_int / logical_width))
+                                    except ValueError:
+                                        pass
+                        
+                        # Get connection type
+                        connection = display.get('spdisplays_connection_type', '')
+                        attributes = []
+                        if connection == 'spdisplays_internal':
+                            attributes.append('Built-in')
+                        elif 'external' in connection.lower():
+                            attributes.append('External')
+                        
+                        # Get physical size (diagonal) using CoreGraphics
+                        physical_size_str = ''
+                        try:
+                            core_graphics = ctypes.CDLL(util.find_library('CoreGraphics'))
+                            if core_graphics:
+                                kCGDirectMainDisplay = 1
+                                
+                                class CGSize(ctypes.Structure):
+                                    _fields_ = [('width', ctypes.c_double), ('height', ctypes.c_double)]
+                                
+                                CGDisplayScreenSize = core_graphics.CGDisplayScreenSize
+                                CGDisplayScreenSize.argtypes = [ctypes.c_uint32]
+                                CGDisplayScreenSize.restype = CGSize
+                                
+                                size = CGDisplayScreenSize(kCGDirectMainDisplay)
+                                # Convert mm to inches (1 inch = 25.4 mm) and calculate diagonal
+                                diagonal = (size.width**2 + size.height**2)**0.5 / 25.4
+                                physical_size_str = f"in {int(round(diagonal))}\""
+                        except Exception:
+                            pass
+                        
+                        # Build the format string
+                        # Format: Display (Color LCD): 4112x2658 @ 2x in 16", 120 Hz [Built-in]
+                        parts = []
+                        parts.append(f"Display ({name}):")
+                        parts.append(f"{physical_width}x{physical_height}")
+                        
+                        if scale > 1:
+                            parts.append(f"@ {scale}x")
+                        
+                        # Combine physical size and refresh rate if both exist
+                        if physical_size_str and refresh_hz:
+                            parts.append(f"{physical_size_str}, {int(refresh_hz)} Hz")
+                        elif physical_size_str:
+                            parts.append(physical_size_str)
+                        elif refresh_hz:
+                            parts.append(f"{int(refresh_hz)} Hz")
+                        
+                        if attributes:
+                            parts.append(f"[{', '.join(attributes)}]")
+                        
+                        return " ".join(parts)
+                        
+            except (plistlib.InvalidFileException, ValueError, KeyError):
+                pass
+                
         except Exception:
             pass
         
@@ -817,4 +907,26 @@ class MacOSSystemInfoCollector(PlatformSystemInfoCollectorBase):
             pass
         
         return disks
+    
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for macOS using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            # psutil.sensors_battery() returns a named tuple with:
+            # - percent: battery percentage (0-100)
+            # - secsleft: time left in seconds (None if unknown/calculating)
+            # - power_plugged: True if AC power connected, False if on battery
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
 

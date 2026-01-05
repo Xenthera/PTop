@@ -380,6 +380,23 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
         
         return disks
     
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
+    
     def get_resolution(self) -> Optional[str]:
         """Get primary display resolution for Linux (not implemented, returns None)."""
         # On Linux, we'd need xrandr or Wayland APIs
@@ -445,6 +462,23 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
             pass
         
         return disks
+    
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
     
     def get_display_server(self) -> Optional[str]:
         """Get display server for Linux (Wayland/X11)."""
@@ -524,6 +558,23 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
             pass
         
         return disks
+    
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
     
     def get_gpu_info(self) -> Optional[str]:
         """Get GPU information for Linux."""
@@ -657,6 +708,23 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
         
         return disks
     
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
+    
     def get_de_wm(self) -> Optional[str]:
         """Get desktop environment/window manager for Linux."""
         # Check XDG environment variables
@@ -731,6 +799,23 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
             pass
         
         return disks
+    
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
     
     def get_cpu_model(self) -> str:
         """Get CPU model for Linux."""
@@ -850,6 +935,23 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
         
         return disks
     
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
+    
     def get_cpu_frequency(self) -> Optional[float]:
         """Get CPU frequency for Linux."""
         if HAS_PSUTIL:
@@ -934,6 +1036,23 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
         
         return disks
     
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
+    
     def get_shell(self) -> Optional[str]:
         """Get default shell for Linux."""
         shell = os.environ.get('SHELL')
@@ -1012,6 +1131,23 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
             pass
         
         return disks
+    
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
     
     def get_terminal(self) -> Optional[str]:
         """Get terminal emulator for Linux."""
@@ -1104,6 +1240,23 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
         
         return disks
     
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
+    
     def get_local_ip(self) -> Optional[str]:
         """Get local IP address for Linux."""
         try:
@@ -1195,4 +1348,21 @@ class LinuxSystemInfoCollector(PlatformSystemInfoCollectorBase):
             pass
         
         return disks
+    
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """Get battery information for Linux using psutil."""
+        try:
+            import psutil
+            
+            battery = psutil.sensors_battery()
+            if battery is None:
+                return None
+            
+            return {
+                'percent': battery.percent,
+                'power_plugged': battery.power_plugged,
+                'secsleft': battery.secsleft if battery.secsleft is not None and battery.secsleft >= 0 else None
+            }
+        except Exception:
+            return None
 

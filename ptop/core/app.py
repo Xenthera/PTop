@@ -28,14 +28,14 @@ class PTopApp:
     - Handles graceful shutdown
     """
     
-    def __init__(self, update_interval: float = 0.05, debug: bool = False, system_info_poll_interval: float = 1.0):
+    def __init__(self, update_interval: float = 0.05, debug: bool = False, system_info_poll_interval: float = 2.0):
         """
         Initialize the application.
         
         Args:
             update_interval: Time in seconds between updates (default: 0.05)
             debug: If True, use mock collectors with random data instead of real collectors
-            system_info_poll_interval: Time in seconds between re-collecting live system info fields like disks (default: 1.0)
+            system_info_poll_interval: Time in seconds between re-collecting live system info fields like disks (default: 2.0)
         """
         self.update_interval = update_interval
         self.running = False

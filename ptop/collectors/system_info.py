@@ -17,12 +17,8 @@ or explicit force redraw.
 import platform
 import os
 import socket
-import sys
 import time
-import glob
 import subprocess
-import shutil
-import json
 from typing import Dict, Any, Optional, Tuple
 
 try:
@@ -79,15 +75,15 @@ class SystemInfoCollector(BaseCollector):
     - display_server: Display server (Wayland/X11, Linux)
     """
     
-    def __init__(self, live_poll_interval: float = 1.0):
+    def __init__(self, live_poll_interval: float = 2.0):
         """
         Initialize the collector and collect all system information.
         
         This runs once at startup and caches all data.
-        Live fields (disks, uptime) are re-collected periodically.
+        Live fields are re-collected periodically based on live_poll_interval.
         
         Args:
-            live_poll_interval: Time in seconds between re-collecting live fields (default: 1.0)
+            live_poll_interval: Time in seconds between re-collecting live fields (default: 2.0)
         """
         self._data: Dict[str, Any] = {}
         self._platform_collector = None  # Will be set in _collect_all
@@ -97,7 +93,6 @@ class SystemInfoCollector(BaseCollector):
     
     def _collect_all(self) -> None:
         """Collect all system information and cache it."""
-        import time
         system = platform.system()
         
         # Get platform-specific collector instance
@@ -105,9 +100,14 @@ class SystemInfoCollector(BaseCollector):
         self._platform_collector = platform_collector  # Store for live updates
         
         # Collect OS and host metadata using platform-specific sub-collector
-        platform_data = platform_collector.collect() if platform_collector else self._collect_platform_info_fallback(system)
-        self._data['os'] = platform_data.get('os', {})
-        self._data['host'] = platform_data.get('host', {})
+        if platform_collector:
+            platform_data = platform_collector.collect()
+            self._data['os'] = platform_data.get('os', {})
+            self._data['host'] = platform_data.get('host', {})
+        else:
+            # Unsupported platform fallback
+            self._data['os'] = {'name': system, 'version': platform.release(), 'codename': None, 'arch': platform.machine()}
+            self._data['host'] = {'model': None, 'identifier': None, 'details': None}
         
         # Kernel version (keep for backward compatibility)
         uname = os.uname()
@@ -138,10 +138,14 @@ class SystemInfoCollector(BaseCollector):
             self._data['local_ip'] = platform_collector.get_local_ip()
             self._data['display_server'] = platform_collector.get_display_server()
             self._data['disks'] = platform_collector.get_disks()
+            self._data['battery'] = platform_collector.get_battery()
+            self._data['memory_used'] = platform_collector.get_memory_used()
+            self._data['process_count'] = platform_collector.get_process_count()
         else:
-            # Fallback for unsupported platforms (shouldn't happen)
+            # Unsupported platform fallback (shouldn't happen in practice)
             self._data['cpu'] = platform.machine()
             self._data['memory_total'] = 0
+            self._data['memory_used'] = 0
             self._data['uptime'] = None
             self._data['cpu_freq'] = None
             self._data['gpu'] = None
@@ -153,6 +157,8 @@ class SystemInfoCollector(BaseCollector):
             self._data['local_ip'] = None
             self._data['display_server'] = None
             self._data['disks'] = []
+            self._data['battery'] = None
+            self._data['process_count'] = 0
     
     def _get_platform_collector(self, system: str):
         """Get the platform-specific collector instance."""
@@ -163,47 +169,6 @@ class SystemInfoCollector(BaseCollector):
         elif system == 'Windows' and WindowsSystemInfoCollector:
             return WindowsSystemInfoCollector()
         return None
-    
-    def _collect_platform_info(self, system: str) -> Dict[str, Any]:
-        """Deprecated: Use _get_platform_collector and call collect() directly."""
-        platform_collector = self._get_platform_collector(system)
-        if platform_collector:
-            return platform_collector.collect()
-        return self._collect_platform_info_fallback(system)
-    
-    def _collect_platform_info_fallback(self, system: str) -> Dict[str, Any]:
-        """
-        Collect platform-specific OS and host information using sub-collectors.
-        
-        Returns:
-            Dictionary with 'os' and 'host' keys containing structured metadata.
-        """
-        # Instantiate and use platform-specific sub-collector
-        if system == 'Darwin' and MacOSSystemInfoCollector:
-            collector = MacOSSystemInfoCollector()
-            return collector.collect()
-        elif system == 'Linux' and LinuxSystemInfoCollector:
-            collector = LinuxSystemInfoCollector()
-            return collector.collect()
-        elif system == 'Windows' and WindowsSystemInfoCollector:
-            collector = WindowsSystemInfoCollector()
-            return collector.collect()
-        else:
-            # Fallback for unsupported platforms
-            arch = platform.machine()
-            return {
-                'os': {
-                    'name': system,
-                    'version': platform.release(),
-                    'codename': None,
-                    'arch': arch
-                },
-                'host': {
-                    'model': None,
-                    'identifier': None,
-                    'details': None
-                }
-            }
     
     def get_data(self) -> Dict[str, Any]:
         """
@@ -228,8 +193,8 @@ class SystemInfoCollector(BaseCollector):
             - local_ip: Local IP address (None if unknown)
             - display_server: Display server Wayland/X11 (None if unknown)
         
-        Note: This returns cached data collected at initialization.
-        The data never changes during application execution.
+        Note: Static fields are cached from initialization.
+        Live fields (uptime, disks, battery, memory_used, process_count) are updated periodically.
         """
         return self._data.copy()
     
@@ -238,14 +203,12 @@ class SystemInfoCollector(BaseCollector):
         Collect system information.
         
         Static fields (OS, host, CPU model, etc.) are cached from initialization.
-        Live fields (disks, uptime) are re-collected periodically based on
+        Live fields (uptime, disks, battery, memory_used, process_count) are re-collected periodically based on
         the live_poll_interval setting.
         
         Returns:
             Dictionary containing all system information.
         """
-        import time
-        
         # Check if we need to update live fields
         current_time = time.time()
         if current_time - self._last_live_update >= self._live_poll_interval:
@@ -255,7 +218,7 @@ class SystemInfoCollector(BaseCollector):
         return self._data.copy()
     
     def _update_live_fields(self) -> None:
-        """Update live fields that can change during runtime (disks, uptime)."""
+        """Update live fields that can change during runtime (uptime, disks, battery, memory_used, process_count)."""
         if not self._platform_collector:
             return
         
@@ -264,6 +227,15 @@ class SystemInfoCollector(BaseCollector):
         
         # Update disks (can change when files are deleted/added or drives mounted/unmounted)
         self._data['disks'] = self._platform_collector.get_disks()
+        
+        # Update battery (can change as battery drains/charges)
+        self._data['battery'] = self._platform_collector.get_battery()
+        
+        # Update memory_used (can change as applications allocate/free memory)
+        self._data['memory_used'] = self._platform_collector.get_memory_used()
+        
+        # Update process_count (can change as processes start/stop)
+        self._data['process_count'] = self._platform_collector.get_process_count()
     
     def get_name(self) -> str:
         """

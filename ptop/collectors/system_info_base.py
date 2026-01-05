@@ -8,6 +8,13 @@ must extend, defining the interface for platform-specific system information col
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    psutil = None
+
 
 class PlatformSystemInfoCollectorBase(ABC):
     """
@@ -175,4 +182,46 @@ class PlatformSystemInfoCollectorBase(ABC):
             - attributes: list[str] - List of attributes (e.g., ["Read-only", "External"])
         """
         return []
+    
+    def get_battery(self) -> Optional[Dict[str, Any]]:
+        """
+        Get battery information.
+        
+        Returns:
+            Dictionary with battery information or None if not available:
+            {
+                'percent': float,  # Battery percentage (0-100)
+                'power_plugged': bool,  # True if AC power connected, False if on battery
+                'secsleft': float or None  # Time remaining in seconds, or None if unknown/calculating
+            }
+        """
+        return None
+    
+    def get_memory_used(self) -> int:
+        """
+        Get current memory used in bytes.
+        
+        Returns:
+            Memory used in bytes (0 if not available).
+        """
+        if HAS_PSUTIL:
+            try:
+                return psutil.virtual_memory().used
+            except Exception:
+                pass
+        return 0
+    
+    def get_process_count(self) -> int:
+        """
+        Get current number of running processes.
+        
+        Returns:
+            Number of running processes (0 if not available).
+        """
+        if HAS_PSUTIL:
+            try:
+                return len(psutil.pids())
+            except Exception:
+                pass
+        return 0
 
