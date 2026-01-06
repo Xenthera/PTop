@@ -1128,6 +1128,21 @@ class ANSIRendererBase(BaseRenderer):
     
     """Initialize the renderer and terminal."""
     def setup(self) -> None:
+        # On Windows, configure stdout to use UTF-8 encoding for Unicode box-drawing characters
+        if sys.platform == 'win32':
+            try:
+                # Try to set UTF-8 encoding for stdout
+                if hasattr(sys.stdout, 'reconfigure'):
+                    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+                elif hasattr(sys.stdout, 'buffer'):
+                    # Fallback: wrap stdout with UTF-8 encoding
+                    import io
+                    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+            except (AttributeError, OSError, ValueError):
+                # If reconfiguration fails, continue with default encoding
+                # Box-drawing characters may not display correctly, but app won't crash
+                pass
+        
         self.terminal_size = self.get_terminal_size()
         
         # Hide cursor

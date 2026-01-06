@@ -9,6 +9,7 @@ temperature, and power consumption (where available).
 import platform
 import psutil
 import re
+import time
 from typing import Dict, Any, List, Tuple, Optional
 
 try:
@@ -63,6 +64,7 @@ class CPUCollector(BaseCollector):
         # This allows subsequent calls to use interval=None (non-blocking)
         psutil.cpu_percent(interval=0.01)
         self._cpu_percent_initialized = True
+        
     
     def _init_cpu_name(self) -> None:
         """Initialize CPU name/model information."""
@@ -74,9 +76,21 @@ class CPUCollector(BaseCollector):
             else:
                 # Fallback to platform module
                 self._cpu_name = platform.processor()
-                if not self._cpu_name or self._cpu_name == '' or self._cpu_name.lower() == 'arm':
+                system = platform.system()
+                
+                # Check if we need platform-specific detection
+                # On Windows, platform.processor() returns technical string like "Intel64 Family 6 Model 158..."
+                # On other platforms, it might be empty or generic
+                needs_detection = (
+                    not self._cpu_name or 
+                    self._cpu_name == '' or 
+                    self._cpu_name.lower() == 'arm' or
+                    (system == 'Windows' and ('family' in self._cpu_name.lower() or 'model' in self._cpu_name.lower()))
+                )
+                
+                if needs_detection:
                     # Try platform-specific methods
-                    if platform.system() == 'Darwin':  # macOS
+                    if system == 'Darwin':  # macOS
                         try:
                             import subprocess
                             result = subprocess.run(
@@ -89,7 +103,7 @@ class CPUCollector(BaseCollector):
                                 self._cpu_name = result.stdout.strip()
                         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                             pass
-                    elif platform.system() == 'Linux':
+                    elif system == 'Linux':
                         try:
                             with open('/proc/cpuinfo', 'r') as f:
                                 for line in f:
@@ -98,6 +112,54 @@ class CPUCollector(BaseCollector):
                                         break
                         except (IOError, IndexError):
                             pass
+                    elif system == 'Windows':
+                        # Windows: Use WMI/CIM to get proper CPU name
+                        try:
+                            import subprocess
+                            # Try PowerShell with Get-CimInstance first (faster than Get-WmiObject on modern Windows)
+                            result = subprocess.run(
+                                ['powershell', '-Command', 
+                                 '(Get-CimInstance Win32_Processor).Name'],
+                                capture_output=True,
+                                text=True,
+                                timeout=2
+                            )
+                            if result.returncode == 0 and result.stdout.strip():
+                                cpu_name = result.stdout.strip().split('\n')[0].strip()
+                                if cpu_name and cpu_name.lower() != 'arm':
+                                    self._cpu_name = cpu_name
+                        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                            # Fallback to Get-WmiObject (older PowerShell versions)
+                            try:
+                                result = subprocess.run(
+                                    ['powershell', '-Command', 
+                                     '(Get-WmiObject Win32_Processor).Name'],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=2
+                                )
+                                if result.returncode == 0 and result.stdout.strip():
+                                    cpu_name = result.stdout.strip().split('\n')[0].strip()
+                                    if cpu_name and cpu_name.lower() != 'arm':
+                                        self._cpu_name = cpu_name
+                            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                                # Final fallback to wmic (very old Windows)
+                                try:
+                                    result = subprocess.run(
+                                        ['wmic', 'cpu', 'get', 'name', '/value'],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=2
+                                    )
+                                    if result.returncode == 0:
+                                        for line in result.stdout.split('\n'):
+                                            if line.startswith('Name='):
+                                                cpu_name = line.split('=', 1)[1].strip()
+                                                if cpu_name and cpu_name.lower() != 'arm':
+                                                    self._cpu_name = cpu_name
+                                                break
+                                except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                                    pass
                     
                     if not self._cpu_name or self._cpu_name.lower() == 'arm':
                         self._cpu_name = platform.machine()

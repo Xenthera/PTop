@@ -110,8 +110,14 @@ class SystemInfoCollector(BaseCollector):
             self._data['host'] = {'model': None, 'identifier': None, 'details': None}
         
         # Kernel version (keep for backward compatibility)
-        uname = os.uname()
-        kernel_version = uname.release
+        # Use platform.uname() for cross-platform compatibility (os.uname() is Unix-only)
+        try:
+            uname = os.uname()  # Try Unix-specific method first
+            kernel_version = uname.release
+        except AttributeError:
+            # Windows doesn't have os.uname(), use platform.uname() instead
+            uname = platform.uname()
+            kernel_version = uname.release
         # On macOS/Darwin, prepend "darwin " to match fastfetch format
         if system == 'Darwin':
             kernel_version = f"darwin {kernel_version}"

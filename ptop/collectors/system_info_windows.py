@@ -181,8 +181,58 @@ class WindowsSystemInfoCollector(PlatformSystemInfoCollectorBase):
     
     def get_cpu_model(self) -> str:
         """Get CPU model for Windows."""
+        # On Windows, platform.processor() returns technical string like "Intel64 Family 6 Model 158..."
+        # Use WMI/CIM to get proper CPU name instead
+        try:
+            import subprocess
+            # Try PowerShell with Get-CimInstance first (faster than Get-WmiObject on modern Windows)
+            result = subprocess.run(
+                ['powershell', '-Command', 
+                 '(Get-CimInstance Win32_Processor).Name'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                cpu_name = result.stdout.strip().split('\n')[0].strip()
+                if cpu_name and cpu_name.lower() != 'arm':
+                    return cpu_name
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            # Fallback to Get-WmiObject (older PowerShell versions)
+            try:
+                result = subprocess.run(
+                    ['powershell', '-Command', 
+                     '(Get-WmiObject Win32_Processor).Name'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    cpu_name = result.stdout.strip().split('\n')[0].strip()
+                    if cpu_name and cpu_name.lower() != 'arm':
+                        return cpu_name
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                # Final fallback to wmic (very old Windows)
+                try:
+                    result = subprocess.run(
+                        ['wmic', 'cpu', 'get', 'name', '/value'],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    if result.returncode == 0:
+                        for line in result.stdout.split('\n'):
+                            if line.startswith('Name='):
+                                cpu_name = line.split('=', 1)[1].strip()
+                                if cpu_name and cpu_name.lower() != 'arm':
+                                    return cpu_name
+                                break
+                except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+        
+        # Final fallback to platform.processor() or platform.machine()
         processor = platform.processor()
-        if processor:
+        if processor and 'family' not in processor.lower() and 'model' not in processor.lower():
             return processor
         return platform.machine()
     
