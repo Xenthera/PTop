@@ -9,11 +9,12 @@ This module manages the processor panel (panel2) which displays:
 
 import math
 from typing import List, Dict, Any, Optional, Tuple
-from ..ui.ansi_renderer import ANSIRendererBase, VLayout, HLayout, Panel
+from ..ui.ansi_renderer import ANSIRendererBase
+from ..ui.ui_elements import VLayout, HLayout, Panel
 from ..ui.colors import ANSIColors, get_gradient_color
-from ..ui.history_graph import SingleLineGraph, MultiLineGraph
-from ..ui.progress_bar import ProgressBar
-from ..ui.inline import InlineText, InlineBar, InlineGraph
+from ..ui.ui_elements import SingleLineGraph, MultiLineGraph
+from ..ui.ui_elements import ProgressBar
+from ..ui.ui_elements.inline import InlineText, InlineBar, InlineGraph
 from ..ui.utils import visible_length
 
 
@@ -56,20 +57,15 @@ class ProcessorPanel:
     def _setup_panel(self) -> None:
         """Set up the processor panel structure."""
         # Create main panel
-        self.panel = self.renderer.create_panel(
-            'panel2',
-            title='',
-            rounded=True,
-            border_color=ANSIColors.BRIGHT_BLACK
-        )
+        self.panel = Panel(1, 1, 1, 1, title='', rounded=True, border_color=ANSIColors.BRIGHT_BLACK)
         
         # Create graph for panel2 top inline (CPU temperature, mapped 0-100% to 30-75°C)
-        self.inline1_graph = self.renderer.create_history_graph(10, min_value=30.0, max_value=75.0, use_braille=True)
+        self.inline1_graph = SingleLineGraph(10, min_value=30.0, max_value=75.0, use_braille=True)
         # Set blue -> purple -> white gradient
         self.inline1_graph.colors = [ANSIColors.BRIGHT_BLUE, ANSIColors.BRIGHT_MAGENTA, ANSIColors.BRIGHT_WHITE]
         
         # Create graph for panel2 bottom inline (GPU VRAM usage, 0-100%)
-        self.inline2_graph = self.renderer.create_history_graph(8, min_value=0.0, max_value=100.0, use_braille=True)
+        self.inline2_graph = SingleLineGraph(8, min_value=0.0, max_value=100.0, use_braille=True)
         # Set red -> pink -> white gradient
         self.inline2_graph.colors = [
             (255, 0, 0),      # Red
@@ -78,7 +74,7 @@ class ProcessorPanel:
         ]
         
         # Create graph for panel2 bottom inline (GPU temperature, mapped 0-100% to 30-100°C)
-        self.inline2_temp_graph = self.renderer.create_history_graph(10, min_value=30.0, max_value=100.0, use_braille=True)
+        self.inline2_temp_graph = SingleLineGraph(10, min_value=30.0, max_value=100.0, use_braille=True)
         # Set blue -> purple -> white gradient (same as CPU temp graph)
         self.inline2_temp_graph.colors = [ANSIColors.BRIGHT_BLUE, ANSIColors.BRIGHT_MAGENTA, ANSIColors.BRIGHT_WHITE]
         
@@ -87,11 +83,7 @@ class ProcessorPanel:
         self.panel.add_child(self.vlayout)
         
         # Create borderless panel for inline content (separator line)
-        self.inline1 = self.renderer.create_panel(
-            'panel2_inline1',
-            borderless=True,
-            max_height=1
-        )
+        self.inline1 = Panel(1, 1, 1, 1, borderless=True, max_height=1)
         self.vlayout.add_panel(self.inline1)
         
         # Create grid layout for core panels (will be populated dynamically)
@@ -99,11 +91,7 @@ class ProcessorPanel:
         self.vlayout.add_layout(self.core_grid_layout)
         
         # Create another borderless panel for inline content (will be added to layout only when GPU data exists)
-        self.inline2 = self.renderer.create_panel(
-            'panel2_inline2',
-            borderless=True,
-            max_height=1
-        )
+        self.inline2 = Panel(1, 1, 1, 1, borderless=True, max_height=1)
         self.inline2_in_layout = False  # Track if inline2 is currently in the layout
     
     def update_layout(self) -> None:
@@ -134,7 +122,7 @@ class ProcessorPanel:
             # Create a multi-line graph for each core (dimensions will be set based on panel size)
             # Start with a default size, will be updated when panel dimensions are known
             for i in range(num_cores):
-                graph = self.renderer.create_multi_line_graph(
+                graph = MultiLineGraph(
                     width_chars=20,  # Default, will be updated
                     height_chars=8,   # Default, will be updated
                     min_value=0.0,
@@ -148,7 +136,7 @@ class ProcessorPanel:
         if not self.core_temp_graphs and num_cores > 0 and has_per_core_temp:
             # Create a single-line temperature graph for each core
             for _ in range(num_cores):
-                graph = self.renderer.create_history_graph(
+                graph = SingleLineGraph(
                     width=10,  # Default width, will be resized by InlineGraph
                     min_value=30.0,
                     max_value=75.0,
@@ -181,20 +169,12 @@ class ProcessorPanel:
                 
                 if core_idx < num_cores:
                     # Create a bordered panel for this core
-                    core_panel = self.renderer.create_panel(
-                        f'panel2_core_{core_idx}',
-                        title=f'C{core_idx}',
-                        rounded=False,
-                        border_color=ANSIColors.BRIGHT_BLACK
-                    )
+                    core_panel = Panel(1, 1, 1, 1, title=f'C{core_idx}', rounded=False, border_color=ANSIColors.BRIGHT_BLACK)
                     self.core_panels.append(core_panel)
                     row_layout.add_panel(core_panel)
                 else:
                     # Empty space for non-perfect squares
-                    empty_panel = self.renderer.create_panel(
-                        f'panel2_empty_{row_idx}_{col_idx}',
-                        borderless=True
-                    )
+                    empty_panel = Panel(1, 1, 1, 1, borderless=True)
                     row_layout.add_panel(empty_panel)
             
             self.core_grid_layout.add_layout(row_layout)

@@ -19,6 +19,7 @@ lines for efficiency.
 
 from typing import Dict, Any, Optional, List, Tuple
 from ..ui.ansi_renderer import ANSIRendererBase
+from ..ui.ui_elements import Panel
 from ..ui.colors import ANSIColors, get_gradient_color
 from ..ui.utils import visible_length
 
@@ -50,12 +51,7 @@ class SystemInfoPanel:
     def _setup_panel(self) -> None:
         """Set up the system information panel structure."""
         # Create main panel
-        self.panel = self.renderer.create_panel(
-            'system_info',
-            title='System',
-            rounded=True,
-            border_color=ANSIColors.BRIGHT_MAGENTA
-        )
+        self.panel = Panel(1, 1, 1, 1, title='System', rounded=True, border_color=ANSIColors.BRIGHT_MAGENTA)
     
     def update_layout(self) -> None:
         """Update panel layout bounds (no-op for this simple panel)."""

@@ -179,11 +179,11 @@ class PTopApp:
                     # Force system info panel to re-render after layout update (to re-wrap text)
                     self.layout.update(metrics, force_redraw=True)
                 
-                # Render all panels using double buffering (layouts will be handled automatically)
+                # Render all containers using double buffering (layouts will be handled automatically)
                 # Double buffering eliminates flicker by building the entire frame in memory,
                 # diffing it against the previous frame, and writing only changed rows atomically.
                 # Force redraw on resize to ensure everything is recalculated
-                self.renderer.render_all_panels(force_redraw=resize_occurred)
+                self.renderer.render_containers(self.layout.containers, force_redraw=resize_occurred)
                 
                 # Wait for next update interval
                 time.sleep(self.update_interval)

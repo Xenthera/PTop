@@ -3,7 +3,7 @@ Progress bar UI element for displaying percentage values with gradient colors.
 """
 
 from typing import Optional, Union, Tuple, List
-from .colors import (
+from ..colors import (
     ANSIColors,
     ansi_to_rgb,
     interpolate_rgb,

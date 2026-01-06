@@ -3,8 +3,8 @@ Inline composition system for mixing text, progress bars, and graphs on the same
 """
 
 from typing import List, Union, Optional, TYPE_CHECKING
-from .utils import visible_length
-from .colors import ANSIColors
+from ..utils import visible_length
+from ..colors import ANSIColors
 
 if TYPE_CHECKING:
     from .history_graph import SingleLineGraph

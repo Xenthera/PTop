@@ -8,10 +8,10 @@ import math
 from typing import List, Optional, Union, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .ansi_renderer import ANSIRendererBase
+    from ..ansi_renderer import ANSIRendererBase
 
 # Import color utilities from colors module
-from .colors import (
+from ..colors import (
     ANSIColors,
     ansi_to_rgb,
     interpolate_rgb,

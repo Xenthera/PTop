@@ -9,9 +9,10 @@ This module manages the history panel (panel1) which displays:
 
 import datetime
 from typing import Dict, Any
-from ..ui.ansi_renderer import ANSIRendererBase, VLayout
-from ..ui.colors import ANSIColors
-from ..ui.inline import InlineText
+from ..ui.ansi_renderer import ANSIRendererBase, ANSIColors
+from ..ui.ui_elements import VLayout, Panel
+from ..ui.ui_elements import MultiLineGraph
+from ..ui.ui_elements import InlineText
 
 
 class HistoryPanel:
@@ -43,12 +44,7 @@ class HistoryPanel:
     def _setup_panel(self) -> None:
         """Set up the history panel structure."""
         # Create main panel
-        self.panel = self.renderer.create_panel(
-            'panel1',
-            title='',
-            rounded=True,
-            border_color=ANSIColors.BRIGHT_CYAN
-        )
+        self.panel = Panel(1, 1, 1, 1, title='', rounded=True, border_color=ANSIColors.BRIGHT_CYAN)
         
         # Set up panel1 with VLayout containing multi-line graphs
         # Create a VLayout inside panel1
@@ -56,32 +52,22 @@ class HistoryPanel:
         self.panel.add_child(self.vlayout)
         
         # Create borderless panels for graphs
-        self.graph_top = self.renderer.create_panel(
-            'panel1_graph_top',
-            borderless=True
-        )
+        self.graph_top = Panel(1, 1, 1, 1, borderless=True)
         
         # Create separator panel
-        self.separator = self.renderer.create_panel(
-            'panel1_separator',
-            borderless=True,
-            max_height=1
-        )
+        self.separator = Panel(1, 1, 1, 1, borderless=True, max_height=1)
         
-        self.graph_bottom = self.renderer.create_panel(
-            'panel1_graph_bottom',
-            borderless=True
-        )
+        self.graph_bottom = Panel(1, 1, 1, 1, borderless=True)
         
         # Add panels to VLayout (initially only CPU graph, GPU elements added dynamically)
         self.vlayout.add_panel(self.graph_top)
         
         # Create multi-line graphs (dimensions will be updated dynamically)
         # Enable max and min labels for graphs to show "100%" in top left and "0%" in bottom left
-        self.graph_top_obj = self.renderer.create_multi_line_graph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=False, show_max_label=True, show_min_label=True)
+        self.graph_top_obj = MultiLineGraph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=False, show_max_label=True, show_min_label=True)
         # CPU graph uses default colors (green -> yellow -> red)
         
-        self.graph_bottom_obj = self.renderer.create_multi_line_graph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=True, show_max_label=True, show_min_label=True)
+        self.graph_bottom_obj = MultiLineGraph(40, 8, min_value=0.0, max_value=100.0, use_braille=True, top_to_bottom=True, show_max_label=True, show_min_label=True)
         # GPU graph uses cyan -> blue -> magenta gradient (similar structure to CPU but different colors)
         self.graph_bottom_obj.colors = [ANSIColors.BRIGHT_CYAN, ANSIColors.BRIGHT_BLUE, ANSIColors.BRIGHT_MAGENTA]
     

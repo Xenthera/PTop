@@ -10,7 +10,8 @@ It is responsible for:
 """
 
 from typing import Dict, Any
-from ..ui.ansi_renderer import ANSIRendererBase, HLayout, VLayout
+from ..ui.ansi_renderer import ANSIRendererBase
+from ..ui.ui_elements import HLayout, VLayout, Panel
 from .history_panel import HistoryPanel
 from .processor_panel import ProcessorPanel
 from .system_info_panel import SystemInfoPanel
@@ -53,7 +54,7 @@ class AppLayout:
         self.system_info_panel = SystemInfoPanel(self.renderer, debug=debug)
         
         # Create blank panel for bottom row (with border, no content)
-        self.blank_panel1 = self.renderer.create_panel('blank_panel1')
+        self.blank_panel1 = Panel(1, 1, 1, 1, title='')
         
         # Build layout hierarchy
         # Top row: history, processor (side by side)
@@ -66,8 +67,8 @@ class AppLayout:
         self.bottom_hlayout.add_panel(self.blank_panel1)
         self.root_layout.add_layout(self.bottom_hlayout)
         
-        # Register root layout with renderer
-        self.renderer.add_layout(self.root_layout)
+        # Store root layout for rendering
+        self.containers = [self.root_layout]
     
     def update_layout(self, cols: int, rows: int) -> None:
         """
