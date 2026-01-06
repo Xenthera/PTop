@@ -1103,6 +1103,7 @@ class ANSIRendererBase(BaseRenderer):
     - Cursor-based efficient updates
     - ANSI color utilities
     - Truecolor (24-bit RGB) support for smooth gradients
+    - Windows Console API optimization for extreme performance
     - History graphs for scrolling data visualization
     
     It does NOT:
@@ -1125,23 +1126,45 @@ class ANSIRendererBase(BaseRenderer):
         # Double buffering: front_buffer is last frame drawn, back_buffer is frame being built
         self.front_buffer: Optional[List[str]] = None  # Previous frame (row-indexed, 0-based)
         self.back_buffer: Optional[List[str]] = None   # Current frame being built
+        # Windows Console API optimization - cache console handle
+        self._win_console_handle = None
+        self._win_kernel32 = None
+        self._win_WriteConsoleW = None
     
     """Initialize the renderer and terminal."""
     def setup(self) -> None:
         # On Windows, configure stdout to use UTF-8 encoding for Unicode box-drawing characters
         if sys.platform == 'win32':
             try:
-                # Try to set UTF-8 encoding for stdout
-                if hasattr(sys.stdout, 'reconfigure'):
-                    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-                elif hasattr(sys.stdout, 'buffer'):
-                    # Fallback: wrap stdout with UTF-8 encoding
-                    import io
-                    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-            except (AttributeError, OSError, ValueError):
-                # If reconfiguration fails, continue with default encoding
-                # Box-drawing characters may not display correctly, but app won't crash
-                pass
+                # Initialize Windows Console API for extreme performance
+                import ctypes
+                from ctypes import wintypes
+                self._win_kernel32 = ctypes.windll.kernel32
+                STD_OUTPUT_HANDLE = -11
+                self._win_console_handle = self._win_kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+                
+                if self._win_console_handle and self._win_console_handle != -1:
+                    # Setup WriteConsoleW function pointer for fast calls
+                    self._win_WriteConsoleW = self._win_kernel32.WriteConsoleW
+                    self._win_WriteConsoleW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+                    self._win_WriteConsoleW.restype = wintypes.BOOL
+                
+                # Try to set UTF-8 encoding for stdout (fallback)
+                try:
+                    if hasattr(sys.stdout, 'reconfigure'):
+                        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+                    elif hasattr(sys.stdout, 'buffer'):
+                        # Fallback: wrap stdout with UTF-8 encoding
+                        # Disable line_buffering for better performance (we flush explicitly)
+                        import io
+                        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=False)
+                except (AttributeError, OSError, ValueError):
+                    pass
+            except (ImportError, AttributeError, OSError):
+                # If Windows API initialization fails, continue with regular stdout
+                self._win_console_handle = None
+                self._win_kernel32 = None
+                self._win_WriteConsoleW = None
         
         self.terminal_size = self.get_terminal_size()
         
@@ -1161,12 +1184,30 @@ class ANSIRendererBase(BaseRenderer):
     """Get current terminal size."""
     def get_terminal_size(self) -> Tuple[int, int]:
         try:
+            # On Windows, cache terminal size check to avoid repeated syscalls
+            # Only check if we don't have a cached size or if it's been a while
+            if sys.platform == 'win32' and hasattr(self, '_cached_terminal_size'):
+                import time
+                current_time = time.time()
+                # Cache for 0.1 seconds to reduce syscalls (terminal size rarely changes)
+                if current_time - getattr(self, '_last_terminal_check', 0) < 0.1:
+                    return self._cached_terminal_size
+                self._last_terminal_check = current_time
+            
             cols, rows = shutil.get_terminal_size()
             new_size = (cols, rows)
             # If terminal size changed, invalidate buffers to force full redraw
             if new_size != self.terminal_size:
                 self.terminal_size = new_size
                 self.front_buffer = None  # Force full redraw on next frame
+            
+            # Cache on Windows
+            if sys.platform == 'win32':
+                self._cached_terminal_size = new_size
+                if not hasattr(self, '_last_terminal_check'):
+                    import time
+                    self._last_terminal_check = time.time()
+            
             return new_size
         except (OSError, AttributeError, ValueError):
             return (DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS)
@@ -1503,7 +1544,69 @@ class ANSIRendererBase(BaseRenderer):
     def _diff_and_draw(self, front_buffer: Optional[List[str]], back_buffer: List[str]) -> None:
         rows = len(back_buffer)
         
-        # If no front buffer, draw everything (first frame or after resize)
+        # On Windows, use cached Windows Console API for extreme performance
+        if sys.platform == 'win32' and self._win_console_handle and self._win_WriteConsoleW:
+            try:
+                from ctypes import wintypes
+                import ctypes
+                
+                # Extreme optimization: build string directly using list with pre-sized estimate
+                # This avoids multiple allocations and method lookups
+                cols = self.terminal_size[0]
+                
+                # Count how many rows we'll write
+                if front_buffer is None or len(front_buffer) != rows:
+                    rows_to_write = rows
+                else:
+                    rows_to_write = sum(1 for i in range(rows) if front_buffer[i] != back_buffer[i])
+                
+                if rows_to_write == 0:
+                    return
+                
+                # Pre-allocate with conservative estimate: cursor move (10) + row (cols + ANSI overhead ~50)
+                estimated_size = rows_to_write * (10 + cols + 50)
+                output_parts = []
+                output_parts_append = output_parts.append  # Cache method lookup for speed
+                
+                if front_buffer is None or len(front_buffer) != rows:
+                    # Full redraw - build all at once
+                    for row_idx in range(rows):
+                        # Move cursor to row (1-based in ANSI), column 1
+                        output_parts_append(f'\033[{row_idx + 1};1H')
+                        output_parts_append(back_buffer[row_idx])
+                else:
+                    # Diff row by row and write only changed rows
+                    for row_idx in range(rows):
+                        if front_buffer[row_idx] != back_buffer[row_idx]:
+                            # Row changed - write it
+                            output_parts_append(f'\033[{row_idx + 1};1H')
+                            output_parts_append(back_buffer[row_idx])
+                
+                # Join all parts into single string (single allocation, optimized by Python)
+                output_str = ''.join(output_parts)
+                
+                # Write using cached WriteConsoleW function pointer
+                # This bypasses Python's stdout wrapper and all encoding overhead
+                written = wintypes.DWORD(0)
+                char_count = len(output_str)
+                result = self._win_WriteConsoleW(
+                    self._win_console_handle,
+                    output_str,  # ctypes converts Python string to LPCWSTR automatically
+                    char_count,
+                    ctypes.byref(written),
+                    None
+                )
+                
+                if not result:
+                    # Fallback to regular stdout if WriteConsoleW fails
+                    sys.stdout.write(output_str)
+                    sys.stdout.flush()
+                return
+            except (AttributeError, OSError, TypeError):
+                # Fall through to regular implementation if Windows API fails
+                pass
+        
+        # Non-Windows or fallback path (original implementation)
         if front_buffer is None or len(front_buffer) != rows:
             # Full redraw
             for row_idx in range(rows):
